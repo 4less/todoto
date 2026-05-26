@@ -1,10 +1,13 @@
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use chrono::{DateTime, Utc};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,14 +77,12 @@ impl Ord for Priority {
     }
 }
 
-// Todos-only data file (notes are stored as individual .md files)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TodoData {
     pub todos: Vec<Todo>,
     pub version: u32,
 }
 
-// Legacy format — used only for one-time migration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LegacyAppData {
     #[serde(default)]
@@ -95,7 +96,11 @@ pub struct LegacyAppData {
 pub struct Settings {
     pub repo_path: String,
     pub repo_url: String,
+    // git_username and git_email are kept for settings.json backward-compat
+    // but are no longer used by the GitHub API sync
+    #[serde(default)]
     pub git_username: String,
+    #[serde(default)]
     pub git_email: String,
     pub git_token: String,
     pub auto_sync: bool,
@@ -111,35 +116,15 @@ pub struct SyncResult {
 
 pub struct AppState {
     pub settings: Settings,
+    pub settings_path: PathBuf,
     pub last_sync: Option<DateTime<Utc>>,
 }
 
-// ── Paths ─────────────────────────────────────────────────────────────────────
+// ── Settings I/O ──────────────────────────────────────────────────────────────
 
-fn config_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("todoto")
-}
-
-fn settings_path() -> PathBuf {
-    config_dir().join("settings.json")
-}
-
-fn todos_path(settings: &Settings) -> Option<PathBuf> {
-    if settings.repo_path.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(&settings.repo_path).join("todos.json"))
-    }
-}
-
-// ── Settings ──────────────────────────────────────────────────────────────────
-
-fn load_settings() -> Settings {
-    let path = settings_path();
+fn load_settings_from_path(path: &Path) -> Settings {
     if path.exists() {
-        fs::read_to_string(&path)
+        fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
@@ -152,14 +137,23 @@ fn load_settings() -> Settings {
     }
 }
 
-fn save_settings_to_disk(settings: &Settings) -> Result<(), String> {
-    let path = settings_path();
-    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+fn save_settings_to_path(settings: &Settings, path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    fs::write(&path, json).map_err(|e| e.to_string())
+    fs::write(path, json).map_err(|e| e.to_string())
 }
 
 // ── Todos storage ─────────────────────────────────────────────────────────────
+
+fn todos_path(settings: &Settings) -> Option<PathBuf> {
+    if settings.repo_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&settings.repo_path).join("todos.json"))
+    }
+}
 
 fn load_todos(settings: &Settings) -> Vec<Todo> {
     let Some(path) = todos_path(settings) else { return vec![] };
@@ -170,15 +164,13 @@ fn load_todos(settings: &Settings) -> Vec<Todo> {
             .map(|d| d.todos)
             .unwrap_or_default()
     } else {
-        // Try migrating from legacy todoto-data.json
         let legacy_path = PathBuf::from(&settings.repo_path).join("todoto-data.json");
         if legacy_path.exists() {
-            let todos = fs::read_to_string(&legacy_path)
+            fs::read_to_string(&legacy_path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<LegacyAppData>(&s).ok())
                 .map(|d| d.todos)
-                .unwrap_or_default();
-            todos
+                .unwrap_or_default()
         } else {
             vec![]
         }
@@ -291,16 +283,7 @@ fn parse_note_file(path: &Path, repo_base: &Path) -> Option<Note> {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    Some(Note {
-        id,
-        title,
-        content: body.to_string(),
-        folder,
-        created_at,
-        updated_at,
-        pinned,
-        tags,
-    })
+    Some(Note { id, title, content: body.to_string(), folder, created_at, updated_at, pinned, tags })
 }
 
 fn scan_notes(repo_base: &Path) -> Vec<Note> {
@@ -333,9 +316,7 @@ fn find_note_file(repo_base: &Path, id: &str) -> Option<PathBuf> {
 }
 
 fn find_note_file_in(dir: &Path, repo_base: &Path, id: &str) -> Option<PathBuf> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return None;
-    };
+    let Ok(entries) = fs::read_dir(dir) else { return None };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -356,7 +337,6 @@ fn find_note_file_in(dir: &Path, repo_base: &Path, id: &str) -> Option<PathBuf> 
     None
 }
 
-// Migrate any notes still inside the legacy todoto-data.json to .md files
 fn migrate_legacy_notes(settings: &Settings) {
     if settings.repo_path.is_empty() {
         return;
@@ -374,189 +354,443 @@ fn migrate_legacy_notes(settings: &Settings) {
     for note in &legacy.notes {
         let _ = write_note_file(&repo_base, note);
     }
-    // Remove notes from legacy file, keep todos
     legacy.notes.clear();
     if let Ok(json) = serde_json::to_string_pretty(&legacy) {
         let _ = fs::write(&legacy_path, json);
     }
 }
 
-// ── Git helpers ───────────────────────────────────────────────────────────────
+// ── GitHub API types ──────────────────────────────────────────────────────────
 
-fn git_cmd(repo_path: &Path, args: &[&str], token: &str) -> Result<String, String> {
-    let mut cmd = Command::new("git");
-    cmd.args(args).current_dir(repo_path);
-    if !token.is_empty() {
-        cmd.env("GIT_ASKPASS", "echo")
-            .env("GIT_TERMINAL_PROMPT", "0");
-    }
-    let output = cmd.output().map_err(|e| e.to_string())?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+#[derive(Deserialize)]
+struct GhTreeItem {
+    path: String,
+    sha: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Deserialize)]
+struct GhTree {
+    tree: Vec<GhTreeItem>,
+}
+
+#[derive(Deserialize)]
+struct GhFileResponse {
+    content: String,
+    sha: String,
+}
+
+#[derive(Serialize)]
+struct GhPutBody<'a> {
+    message: &'a str,
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sha: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+struct GhPutResponse {
+    content: GhPutContent,
+}
+
+#[derive(Deserialize)]
+struct GhPutContent {
+    sha: String,
+}
+
+#[derive(Serialize)]
+struct GhDeleteBody<'a> {
+    message: &'a str,
+    sha: &'a str,
+}
+
+// ── Sync manifest ─────────────────────────────────────────────────────────────
+
+// Maps repo-relative path → GitHub blob SHA, tracking what was last synced.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct SyncManifest {
+    files: HashMap<String, String>,
+}
+
+fn load_manifest(repo_path: &Path) -> SyncManifest {
+    let path = repo_path.join(".sync_manifest.json");
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_manifest(repo_path: &Path, manifest: &SyncManifest) {
+    let path = repo_path.join(".sync_manifest.json");
+    if let Ok(json) = serde_json::to_string_pretty(manifest) {
+        let _ = fs::write(path, json);
     }
 }
 
-fn inject_token(url: &str, token: &str) -> String {
-    if token.is_empty() || url.is_empty() {
-        return url.to_string();
-    }
-    if url.starts_with("https://github.com/") {
-        url.replacen(
-            "https://github.com/",
-            &format!("https://{}@github.com/", token),
-            1,
-        )
-    } else if url.starts_with("https://") {
-        url.replacen("https://", &format!("https://{}@", token), 1)
-    } else {
-        url.to_string()
-    }
-}
+// ── GitHub API helpers ────────────────────────────────────────────────────────
 
-fn set_git_identity(settings: &Settings, repo_path: &Path) {
-    let name = if settings.git_username.is_empty() {
-        "todoto"
-    } else {
-        &settings.git_username
-    };
-    let email = if settings.git_email.is_empty() {
-        "todoto@local"
-    } else {
-        &settings.git_email
-    };
-    let _ = git_cmd(repo_path, &["config", "user.name", name], &settings.git_token);
-    let _ = git_cmd(
-        repo_path,
-        &["config", "user.email", email],
-        &settings.git_token,
+fn make_github_client(token: &str) -> Result<Client, String> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::ACCEPT,
+        "application/vnd.github+json".parse().unwrap(),
     );
+    headers.insert("X-GitHub-Api-Version", "2022-11-28".parse().unwrap());
+    headers.insert(reqwest::header::USER_AGENT, "todoto/1.0".parse().unwrap());
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        format!("Bearer {token}").parse().map_err(|e: reqwest::header::InvalidHeaderValue| e.to_string())?,
+    );
+    Client::builder()
+        .default_headers(headers)
+        .build()
+        .map_err(|e| e.to_string())
 }
 
-fn do_sync(settings: &Settings) -> SyncResult {
-    let repo_path = if settings.repo_path.is_empty() {
-        return SyncResult {
-            success: false,
-            message: "No repository path configured.".to_string(),
-            timestamp: Utc::now(),
+fn parse_github_repo(url: &str) -> Option<(String, String)> {
+    let url = url.trim_end_matches('/').trim_end_matches(".git");
+    let path = url.strip_prefix("https://github.com/")?;
+    let (owner, repo) = path.split_once('/')?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
+// Computes the same SHA git uses for a blob, so we can compare with GitHub's tree SHA.
+fn github_blob_sha(content: &[u8]) -> String {
+    let header = format!("blob {}\0", content.len());
+    let mut h = Sha1::new();
+    h.update(header.as_bytes());
+    h.update(content);
+    format!("{:x}", h.finalize())
+}
+
+fn encode_url_path(path: &str) -> String {
+    path.split('/')
+        .map(|seg| seg.replace(' ', "%20"))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn is_synced_file(path: &str) -> bool {
+    path.ends_with(".md") || path == "todos.json"
+}
+
+// Returns map of repo-relative path → GitHub blob SHA for all tracked files.
+async fn gh_list_tree(client: &Client, owner: &str, repo: &str) -> Result<HashMap<String, String>, String> {
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/git/trees/HEAD?recursive=1");
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    let status = resp.status().as_u16();
+    // 404 = repo not found; 409 = repo exists but is empty (no commits yet)
+    if status == 404 || status == 409 {
+        return Ok(HashMap::new());
+    }
+    if !resp.status().is_success() {
+        return Err(format!("list tree: HTTP {status}"));
+    }
+    let tree: GhTree = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(tree
+        .tree
+        .into_iter()
+        .filter(|i| i.kind == "blob" && is_synced_file(&i.path))
+        .map(|i| (i.path, i.sha))
+        .collect())
+}
+
+// Downloads a file from GitHub. Returns (decoded_utf8_content, blob_sha).
+async fn gh_get_file(client: &Client, owner: &str, repo: &str, path: &str) -> Result<(String, String), String> {
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/contents/{}",
+        encode_url_path(path)
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("get {path}: HTTP {}", resp.status()));
+    }
+    let file: GhFileResponse = resp.json().await.map_err(|e| e.to_string())?;
+    // GitHub wraps base64 in newlines every 60 chars
+    let clean = file.content.replace(['\n', '\r'], "");
+    let bytes = B64.decode(&clean).map_err(|e| format!("decode {path}: {e}"))?;
+    let content = String::from_utf8(bytes).map_err(|e| format!("utf8 {path}: {e}"))?;
+    Ok((content, file.sha))
+}
+
+// Creates or updates a file on GitHub. Returns the new blob SHA.
+async fn gh_put_file(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    path: &str,
+    content: &str,
+    current_sha: Option<&str>,
+) -> Result<String, String> {
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/contents/{}",
+        encode_url_path(path)
+    );
+    let body = GhPutBody {
+        message: &format!("sync: {}", Utc::now().format("%Y-%m-%d %H:%M UTC")),
+        content: B64.encode(content.as_bytes()),
+        sha: current_sha,
+    };
+    let resp = client.put(&url).json(&body).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("put {path}: HTTP {status}: {text}"));
+    }
+    let put_resp: GhPutResponse = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(put_resp.content.sha)
+}
+
+async fn gh_delete_file(client: &Client, owner: &str, repo: &str, path: &str, sha: &str) -> Result<(), String> {
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/contents/{}",
+        encode_url_path(path)
+    );
+    let body = GhDeleteBody {
+        message: &format!("sync: delete {}", path.rsplit('/').next().unwrap_or(path)),
+        sha,
+    };
+    let resp = client.delete(&url).json(&body).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("delete {path}: HTTP {status}: {text}"));
+    }
+    Ok(())
+}
+
+// ── Local file scanning ───────────────────────────────────────────────────────
+
+// Returns all tracked local files as a map of forward-slash relative path → content.
+fn scan_local_files(repo_path: &Path) -> HashMap<String, String> {
+    let mut files = HashMap::new();
+    scan_local_dir(repo_path, repo_path, &mut files);
+    files
+}
+
+fn scan_local_dir(dir: &Path, base: &Path, out: &mut HashMap<String, String>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|e| e.path());
+    for entry in entries {
+        let path = entry.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            scan_local_dir(&path, base, out);
+        } else if path.extension().map_or(false, |e| e == "md") || name == "todos.json" {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(rel) = path.strip_prefix(base) {
+                    // Always use '/' for GitHub API paths regardless of OS
+                    let rel_str = rel.to_string_lossy().replace('\\', "/");
+                    out.insert(rel_str, content);
+                }
+            }
+        }
+    }
+}
+
+// ── Sync logic ────────────────────────────────────────────────────────────────
+
+// Merges local and remote todos.json by ID, taking the newer updated_at per todo.
+async fn merge_todos(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    path: &str,
+    gh_sha: &str,
+    local_content: &str,
+) -> Result<(String, String), String> {
+    let (remote_content, _) = gh_get_file(client, owner, repo, path).await?;
+    let local_data: TodoData = serde_json::from_str(local_content).map_err(|e| e.to_string())?;
+    let remote_data: TodoData = serde_json::from_str(&remote_content).map_err(|e| e.to_string())?;
+
+    let mut by_id: HashMap<String, Todo> =
+        remote_data.todos.into_iter().map(|t| (t.id.clone(), t)).collect();
+    for todo in local_data.todos {
+        match by_id.get(&todo.id) {
+            Some(existing) if existing.updated_at >= todo.updated_at => {}
+            _ => {
+                by_id.insert(todo.id.clone(), todo);
+            }
+        }
+    }
+
+    let merged = TodoData { todos: by_id.into_values().collect(), version: 1 };
+    let json = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
+    let new_sha = gh_put_file(client, owner, repo, path, &json, Some(gh_sha)).await?;
+    Ok((json, new_sha))
+}
+
+async fn do_sync(settings: &Settings) -> SyncResult {
+    macro_rules! fail {
+        ($msg:literal) => {
+            return SyncResult { success: false, message: $msg.to_string(), timestamp: Utc::now() }
         };
-    } else {
-        PathBuf::from(&settings.repo_path)
+        ($fmt:literal, $($arg:tt)*) => {
+            return SyncResult { success: false, message: format!($fmt, $($arg)*), timestamp: Utc::now() }
+        };
+    }
+
+    if settings.repo_path.is_empty() {
+        fail!("No local data path configured.");
+    }
+    if settings.repo_url.is_empty() {
+        fail!("No GitHub repository URL configured.");
+    }
+    if settings.git_token.is_empty() {
+        fail!("No GitHub token configured.");
+    }
+
+    let (owner, repo) = match parse_github_repo(&settings.repo_url) {
+        Some(v) => v,
+        None => fail!("Cannot parse GitHub URL: {}", settings.repo_url),
     };
 
-    if !repo_path.join(".git").exists() {
-        if let Err(e) = fs::create_dir_all(&repo_path) {
-            return SyncResult {
-                success: false,
-                message: format!("Failed to create directory: {e}"),
-                timestamp: Utc::now(),
-            };
-        }
-        if !settings.repo_url.is_empty() {
-            let url = inject_token(&settings.repo_url, &settings.git_token);
-            if let Err(e) = git_cmd(
-                &repo_path,
-                &["clone", "--depth=1", &url, "."],
-                &settings.git_token,
-            ) {
-                let _ = git_cmd(&repo_path, &["init"], &settings.git_token);
-                let _ = git_cmd(
-                    &repo_path,
-                    &["remote", "add", "origin", &url],
-                    &settings.git_token,
-                );
-                set_git_identity(settings, &repo_path);
-                return SyncResult {
-                    success: false,
-                    message: format!("Clone failed: {e}. Initialized empty repo."),
-                    timestamp: Utc::now(),
-                };
+    let repo_path = PathBuf::from(&settings.repo_path);
+    if let Err(e) = fs::create_dir_all(&repo_path) {
+        fail!("Cannot create data directory: {}", e);
+    }
+
+    let client = match make_github_client(&settings.git_token) {
+        Ok(c) => c,
+        Err(e) => fail!("Cannot create HTTP client: {}", e),
+    };
+
+    let github_map = match gh_list_tree(&client, &owner, &repo).await {
+        Ok(m) => m,
+        Err(e) => fail!("Cannot read GitHub repository: {}", e),
+    };
+    let manifest = load_manifest(&repo_path);
+    let local_files = scan_local_files(&repo_path);
+
+    let mut new_manifest: HashMap<String, String> = HashMap::new();
+    let mut errors: Vec<String> = Vec::new();
+    let mut uploaded = 0usize;
+    let mut downloaded = 0usize;
+    let mut deleted_count = 0usize;
+
+    // ── Delete from GitHub: in manifest but no longer present locally ─────────
+    for path in manifest.files.keys() {
+        if !local_files.contains_key(path) {
+            if let Some(gh_sha) = github_map.get(path) {
+                match gh_delete_file(&client, &owner, &repo, path, gh_sha).await {
+                    Ok(()) => deleted_count += 1,
+                    Err(e) => errors.push(e),
+                }
             }
-        } else {
-            let _ = git_cmd(&repo_path, &["init"], &settings.git_token);
-        }
-        set_git_identity(settings, &repo_path);
-    }
-
-    set_git_identity(settings, &repo_path);
-
-    if !settings.repo_url.is_empty() {
-        let url = inject_token(&settings.repo_url, &settings.git_token);
-        let _ = git_cmd(
-            &repo_path,
-            &["remote", "set-url", "origin", &url],
-            &settings.git_token,
-        )
-        .or_else(|_| {
-            git_cmd(
-                &repo_path,
-                &["remote", "add", "origin", &url],
-                &settings.git_token,
-            )
-        });
-    }
-
-    // Step 1: stage ALL local changes first (notes as .md + todos.json)
-    let _ = git_cmd(&repo_path, &["add", "-A"], &settings.git_token);
-
-    let has_changes = git_cmd(
-        &repo_path,
-        &["diff", "--cached", "--stat"],
-        &settings.git_token,
-    )
-    .map(|s| !s.trim().is_empty())
-    .unwrap_or(true);
-
-    if has_changes {
-        let msg = format!("sync: {}", Utc::now().format("%Y-%m-%d %H:%M UTC"));
-        if let Err(e) = git_cmd(&repo_path, &["commit", "-m", &msg], &settings.git_token) {
-            return SyncResult {
-                success: false,
-                message: format!("Commit failed: {e}"),
-                timestamp: Utc::now(),
-            };
+            // Either deleted on GitHub already, or successfully deleted — don't add to new manifest.
         }
     }
 
-    // Step 2: pull remote changes (rebases local commit on top)
-    if !settings.repo_url.is_empty() {
-        let _ = git_cmd(
-            &repo_path,
-            &["pull", "--rebase", "origin", "HEAD"],
-            &settings.git_token,
-        );
+    // ── Process local files ───────────────────────────────────────────────────
+    for (path, content) in &local_files {
+        let local_sha = github_blob_sha(content.as_bytes());
+
+        match github_map.get(path) {
+            Some(gh_sha) if *gh_sha == local_sha => {
+                // Local and GitHub are identical — nothing to do.
+                new_manifest.insert(path.clone(), gh_sha.clone());
+            }
+            Some(gh_sha) => {
+                // Content differs between local and GitHub.
+                let manifest_sha = manifest.files.get(path);
+                let github_changed = manifest_sha.map_or(true, |ms| ms != gh_sha);
+                let local_changed = manifest_sha.map_or(true, |ms| ms != &local_sha);
+
+                if github_changed && !local_changed {
+                    // Only GitHub changed → download remote version.
+                    match gh_get_file(&client, &owner, &repo, path).await {
+                        Ok((remote_content, sha)) => {
+                            let local_path = repo_path.join(path);
+                            if let Some(p) = local_path.parent() {
+                                fs::create_dir_all(p).ok();
+                            }
+                            if fs::write(&local_path, &remote_content).is_ok() {
+                                new_manifest.insert(path.clone(), sha);
+                                downloaded += 1;
+                            }
+                        }
+                        Err(e) => errors.push(e),
+                    }
+                } else if github_changed && local_changed && path == "todos.json" {
+                    // Both sides changed on todos.json → merge by ID.
+                    match merge_todos(&client, &owner, &repo, path, gh_sha, content).await {
+                        Ok((merged, new_sha)) => {
+                            let _ = fs::write(repo_path.join(path), &merged);
+                            new_manifest.insert(path.clone(), new_sha);
+                            uploaded += 1;
+                        }
+                        Err(e) => errors.push(e),
+                    }
+                } else {
+                    // Local changed (or conflict on a note) → local wins, upload.
+                    match gh_put_file(&client, &owner, &repo, path, content, Some(gh_sha)).await {
+                        Ok(new_sha) => {
+                            new_manifest.insert(path.clone(), new_sha);
+                            uploaded += 1;
+                        }
+                        Err(e) => errors.push(e),
+                    }
+                }
+            }
+            None => {
+                // File does not exist on GitHub → upload.
+                match gh_put_file(&client, &owner, &repo, path, content, None).await {
+                    Ok(new_sha) => {
+                        new_manifest.insert(path.clone(), new_sha);
+                        uploaded += 1;
+                    }
+                    Err(e) => errors.push(e),
+                }
+            }
+        }
     }
 
-    // Step 3: push
-    if !settings.repo_url.is_empty() {
-        match git_cmd(
-            &repo_path,
-            &["push", "--set-upstream", "origin", "HEAD"],
-            &settings.git_token,
-        ) {
-            Ok(_) => SyncResult {
-                success: true,
-                message: "Synced with GitHub.".to_string(),
-                timestamp: Utc::now(),
-            },
-            Err(e) => SyncResult {
-                success: false,
-                message: format!("Push failed: {e}"),
-                timestamp: Utc::now(),
-            },
+    // ── Download files new on GitHub (not in manifest, not local) ────────────
+    for (path, _gh_sha) in &github_map {
+        if local_files.contains_key(path) {
+            continue; // already handled above
+        }
+        if manifest.files.contains_key(path) {
+            continue; // was deleted locally — already handled in deletion step
+        }
+        match gh_get_file(&client, &owner, &repo, path).await {
+            Ok((content, sha)) => {
+                let local_path = repo_path.join(path);
+                if let Some(p) = local_path.parent() {
+                    fs::create_dir_all(p).ok();
+                }
+                if fs::write(&local_path, &content).is_ok() {
+                    new_manifest.insert(path.clone(), sha);
+                    downloaded += 1;
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+
+    save_manifest(&repo_path, &SyncManifest { files: new_manifest });
+
+    let message = if errors.is_empty() {
+        match (uploaded, downloaded, deleted_count) {
+            (0, 0, 0) => "Already up to date.".to_string(),
+            _ => format!("Synced. ↑{uploaded} ↓{downloaded} ✕{deleted_count}"),
         }
     } else {
-        SyncResult {
-            success: true,
-            message: if has_changes {
-                "Committed locally (no remote configured).".to_string()
-            } else {
-                "Already up to date.".to_string()
-            },
-            timestamp: Utc::now(),
-        }
-    }
+        format!(
+            "Partial sync ↑{uploaded} ↓{downloaded}. Error: {}",
+            errors.first().unwrap()
+        )
+    };
+
+    SyncResult { success: errors.is_empty(), message, timestamp: Utc::now() }
 }
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
@@ -570,9 +804,7 @@ fn get_notes(state: State<Mutex<AppState>>) -> Vec<Note> {
     let repo_base = PathBuf::from(&state.settings.repo_path);
     let mut notes = scan_notes(&repo_base);
     notes.sort_by(|a, b| {
-        b.pinned
-            .cmp(&a.pinned)
-            .then(b.updated_at.cmp(&a.updated_at))
+        b.pinned.cmp(&a.pinned).then(b.updated_at.cmp(&a.updated_at))
     });
     notes
 }
@@ -589,7 +821,6 @@ fn save_note(state: State<Mutex<AppState>>, mut note: Note) -> Result<Note, Stri
         note.id = Uuid::new_v4().to_string();
         note.created_at = Utc::now();
     } else {
-        // If title or folder changed, delete the old file
         if let Some(old_path) = find_note_file(&repo_base, &note.id) {
             let new_path = note_file_path(&repo_base, &note);
             if old_path != new_path {
@@ -661,20 +892,21 @@ fn get_settings(state: State<Mutex<AppState>>) -> Settings {
 
 #[tauri::command]
 fn save_settings(state: State<Mutex<AppState>>, settings: Settings) -> Result<(), String> {
-    save_settings_to_disk(&settings)?;
+    let mut state = state.lock().unwrap();
+    save_settings_to_path(&settings, &state.settings_path)?;
     migrate_legacy_notes(&settings);
-    state.lock().unwrap().settings = settings;
+    state.settings = settings;
     Ok(())
 }
 
 #[tauri::command]
-fn sync_now(state: State<Mutex<AppState>>) -> SyncResult {
+async fn sync_now(state: State<'_, Mutex<AppState>>) -> Result<SyncResult, String> {
     let settings = state.lock().unwrap().settings.clone();
-    let result = do_sync(&settings);
+    let result = do_sync(&settings).await;
     if result.success {
         state.lock().unwrap().last_sync = Some(result.timestamp);
     }
-    result
+    Ok(result)
 }
 
 #[tauri::command]
@@ -685,11 +917,9 @@ fn get_last_sync(state: State<Mutex<AppState>>) -> Option<DateTime<Utc>> {
 #[tauri::command]
 fn read_file_base64(path: String) -> Result<String, String> {
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-    Ok(to_base64(&bytes))
+    Ok(B64.encode(&bytes))
 }
 
-// Find an asset relative to note_dir: tries direct path first,
-// then one level of subdirectories. Returns the absolute path if found.
 #[tauri::command]
 fn find_asset(note_dir: String, src: String) -> Option<String> {
     let base = Path::new(&note_dir);
@@ -710,41 +940,56 @@ fn find_asset(note_dir: String, src: String) -> Option<String> {
     None
 }
 
-fn to_base64(data: &[u8]) -> String {
-    const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity((data.len() + 2) / 3 * 4);
-    for c in data.chunks(3) {
-        let b = [c[0] as usize, c.get(1).copied().unwrap_or(0) as usize, c.get(2).copied().unwrap_or(0) as usize];
-        out.push(T[(b[0] >> 2) & 63]);
-        out.push(T[((b[0] << 4) | (b[1] >> 4)) & 63]);
-        out.push(if c.len() > 1 { T[((b[1] << 2) | (b[2] >> 6)) & 63] } else { b'=' });
-        out.push(if c.len() > 2 { T[b[2] & 63] } else { b'=' });
-    }
-    String::from_utf8(out).unwrap()
-}
+// ── App entry point ───────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let settings = load_settings();
-
-    // Migrate any notes still in the legacy JSON on startup
-    migrate_legacy_notes(&settings);
-
-    if settings.auto_sync && !settings.repo_path.is_empty() {
-        let s = settings.clone();
-        std::thread::spawn(move || {
-            do_sync(&s);
-        });
-    }
-
-    let state = Mutex::new(AppState {
-        settings,
-        last_sync: None,
-    });
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(state)
+        .setup(|app| {
+            // Use Tauri's path resolver so this works correctly on Android
+            // (where dirs::config_dir() is not reliable).
+            let config_dir = app.path().app_config_dir().unwrap_or_else(|_| {
+                dirs::config_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("todoto")
+            });
+            let data_dir = app.path().app_data_dir().unwrap_or_else(|_| {
+                dirs::data_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("todoto")
+            });
+
+            fs::create_dir_all(&config_dir).ok();
+
+            let settings_path = config_dir.join("settings.json");
+            let mut settings = load_settings_from_path(&settings_path);
+
+            // Auto-set repo_path on first launch (important for Android where
+            // users cannot browse the filesystem).
+            if settings.repo_path.is_empty() {
+                let default_path = data_dir.join("notes");
+                settings.repo_path = default_path.to_string_lossy().into_owned();
+                save_settings_to_path(&settings, &settings_path).ok();
+            }
+
+            migrate_legacy_notes(&settings);
+
+            if settings.auto_sync && !settings.repo_url.is_empty() {
+                let s = settings.clone();
+                tauri::async_runtime::spawn(async move {
+                    do_sync(&s).await;
+                });
+            }
+
+            app.manage(Mutex::new(AppState {
+                settings,
+                settings_path,
+                last_sync: None,
+            }));
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_notes,
             save_note,

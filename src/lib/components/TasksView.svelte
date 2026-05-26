@@ -4,6 +4,7 @@
   import { api } from '$lib/api';
   import type { Todo, WorkSession } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
+  import DatePicker from '$lib/components/DatePicker.svelte';
 
   // ── Filter state ──────────────────────────────────────────────────────────
   let filterStatus: 'all' | 'pending' | 'done' = $state('all');
@@ -27,8 +28,11 @@
   let editDue = $state('');
   let editTagInput = $state('');
 
+  // ── Selection state ───────────────────────────────────────────────────────
+  let selectedIds: Set<string> = $state(new Set());
+  let confirmDelete = $state(false);
+
   // ── Timer state ───────────────────────────────────────────────────────────
-  // Maps todo.id → epoch ms when the current session started
   let activeTimers: Map<string, number> = $state(new Map());
   let expandedSessions: string | null = $state(null);
   let tick = $state(0);
@@ -58,12 +62,15 @@
     })
   );
 
+  let selTodo = $derived(
+    selectedIds.size === 1 ? $todos.find((t) => selectedIds.has(t.id)) ?? null : null
+  );
+
   // ── Actions ───────────────────────────────────────────────────────────────
   async function toggleDone(todo: Todo) {
     const now = new Date().toISOString();
     const markingDone = !todo.done;
 
-    // Stop any running timer first, then apply done state
     if (activeTimers.has(todo.id)) {
       const startMs = activeTimers.get(todo.id)!;
       const newMap = new Map(activeTimers);
@@ -87,7 +94,6 @@
     const newMap = new Map(activeTimers);
     newMap.set(todo.id, Date.now());
     activeTimers = newMap;
-    // Set started_at if this is the first session
     if (!todo.started_at) {
       const updated = await api.saveTodo({ ...todo, started_at: now });
       todos.update((ts) => ts.map((t) => (t.id === updated.id ? updated : t)));
@@ -132,6 +138,7 @@
     editPriority = todo.priority;
     editDue = todo.due_date ?? '';
     editTagInput = todo.tags.join(', ');
+    selectedIds = new Set();
   }
 
   async function saveEdit(todo: Todo) {
@@ -148,6 +155,22 @@
     activeTimers.delete(id);
     await api.deleteTodo(id);
     todos.update((ts) => ts.filter((t) => t.id !== id));
+  }
+
+  function toggleSelect(id: string) {
+    const next = new Set(selectedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    selectedIds = next;
+    confirmDelete = false;
+  }
+
+  async function deleteSelected() {
+    for (const id of selectedIds) {
+      await deleteTodo(id);
+    }
+    selectedIds = new Set();
+    confirmDelete = false;
   }
 
   // ── Formatting helpers ────────────────────────────────────────────────────
@@ -172,7 +195,6 @@
   }
 
   function formatElapsed(startMs: number): string {
-    // tick is read so Svelte re-runs this every second
     void tick;
     const secs = Math.floor((Date.now() - startMs) / 1000);
     const h = Math.floor(secs / 3600);
@@ -215,7 +237,12 @@
       if (!showFilters) showFilters = true;
       focusSearchSoon();
     }
+    if (e.key === 'Escape' && selectedIds.size > 0) {
+      selectedIds = new Set();
+      confirmDelete = false;
+    }
   }
+
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
@@ -254,7 +281,7 @@
           <option value="medium">Medium priority</option>
           <option value="low">Low priority</option>
         </select>
-        <input class="input" type="text" placeholder="YYYY-MM-DD" bind:value={newDue} title="Due date" />
+        <DatePicker bind:value={newDue} placeholder="Due date" />
         <input class="input" placeholder="#tags (space/comma separated)" bind:value={newTagInput} />
       </div>
       <div class="form-actions">
@@ -310,8 +337,9 @@
         {@const timerStartMs = activeTimers.get(todo.id)}
         {@const sessions = todo.work_sessions ?? []}
         {@const totalMs = totalSessionMs(sessions)}
+        {@const isSelected = selectedIds.has(todo.id)}
 
-        <div class="task-card {todo.done ? 'done' : ''} {isTimerActive ? 'timer-active' : ''}">
+        <div class="task-card {todo.done ? 'done' : ''} {isTimerActive ? 'timer-active' : ''} {isSelected ? 'selected' : ''}">
           {#if editId === todo.id}
             <!-- Inline edit -->
             <div class="edit-form">
@@ -322,7 +350,7 @@
                   <option value="medium">Medium</option>
                   <option value="low">Low</option>
                 </select>
-                <input class="input" type="text" placeholder="YYYY-MM-DD" bind:value={editDue} />
+                <DatePicker bind:value={editDue} placeholder="Due date" />
                 <input class="input" placeholder="#tags" bind:value={editTagInput} />
               </div>
               <div class="form-actions">
@@ -339,7 +367,7 @@
               {/if}
             </button>
 
-            <div class="task-body">
+            <div class="task-body" onclick={() => toggleSelect(todo.id)}>
               <div class="task-title-row">
                 <span class="priority-bar" style="background:{priorityColor(todo.priority)}" title="{todo.priority} priority"></span>
                 <span class="task-title">{todo.title}</span>
@@ -361,35 +389,14 @@
                 {#if totalMs > 0}
                   <button
                     class="time-chip logged {expandedSessions === todo.id ? 'active' : ''}"
-                    onclick={() => (expandedSessions = expandedSessions === todo.id ? null : todo.id)}
+                    onclick={(e) => { e.stopPropagation(); expandedSessions = expandedSessions === todo.id ? null : todo.id; }}
                     title="View work sessions"
                   >⏱ {formatDuration(totalMs)}</button>
                 {/if}
                 {#each todo.tags as tag}
-                  <button class="tag-chip" onclick={() => (filterTag = tag)} title="Filter by #{tag}">#{tag}</button>
+                  <button class="tag-chip" onclick={(e) => { e.stopPropagation(); filterTag = tag; }} title="Filter by #{tag}">#{tag}</button>
                 {/each}
               </div>
-            </div>
-
-            <div class="task-actions {isTimerActive ? 'always-visible' : ''}">
-              {#if isTimerActive && timerStartMs !== undefined}
-                <button class="action-btn timer-stop" onclick={() => stopTimer(todo)} title="Stop timer">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
-                </button>
-              {:else}
-                <button class="action-btn timer-play" onclick={() => startTimer(todo)} title="Start timer">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                </button>
-              {/if}
-              <button class="action-btn" onclick={() => startEdit(todo)} title="Edit">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              </button>
-              <button class="action-btn" onclick={() => copyMarkdown(todo)} title="Copy markdown">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              </button>
-              <button class="action-btn danger" onclick={() => deleteTodo(todo.id)} title="Delete">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
-              </button>
             </div>
           {/if}
         </div>
@@ -411,10 +418,53 @@
       {/each}
     {/if}
   </div>
+
+  <!-- Selection action bar -->
+  {#if selectedIds.size > 0}
+    <div class="selection-bar">
+      {#if confirmDelete}
+        <span class="sel-count">Delete {selectedIds.size} task{selectedIds.size > 1 ? 's' : ''}?</span>
+        <div class="sel-spacer"></div>
+        <button class="sel-btn danger" onclick={deleteSelected}>Confirm</button>
+        <button class="sel-btn ghost" onclick={() => (confirmDelete = false)}>Cancel</button>
+      {:else}
+        <span class="sel-count">{selectedIds.size} selected</span>
+        <button class="sel-btn ghost icon-only" onclick={() => { selectedIds = new Set(); }} title="Clear selection">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        <div class="sel-spacer"></div>
+        {#if selTodo}
+          {#if activeTimers.has(selTodo.id)}
+            <button class="sel-btn timer-stop" onclick={() => stopTimer(selTodo!)} title="Stop timer">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+              Stop
+            </button>
+          {:else}
+            <button class="sel-btn timer-play" onclick={() => startTimer(selTodo!)} title="Start timer">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Play
+            </button>
+          {/if}
+          <button class="sel-btn" onclick={() => startEdit(selTodo!)} title="Edit">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            Edit
+          </button>
+          <button class="sel-btn" onclick={() => copyMarkdown(selTodo!)} title="Copy markdown">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Copy
+          </button>
+        {/if}
+        <button class="sel-btn danger" onclick={() => (confirmDelete = true)} title="Delete selected">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+          Delete
+        </button>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>
-  .tasks { height: 100%; overflow-y: auto; padding: 28px 32px; display: flex; flex-direction: column; gap: 16px; }
+  .tasks { height: 100%; overflow-y: auto; padding: 28px 32px 16px; display: flex; flex-direction: column; gap: 16px; }
 
   .page-header { display: flex; justify-content: space-between; align-items: flex-start; }
   .header-actions { display: flex; align-items: center; gap: 8px; }
@@ -501,18 +551,19 @@
   .task-card {
     background: #13131a; border: 1px solid #1e1e2e; border-radius: 10px;
     padding: 10px 14px; display: flex; align-items: flex-start; gap: 12px;
-    transition: border-color 0.12s;
+    transition: border-color 0.12s, background 0.12s;
   }
   .task-card:hover { border-color: #2d2d3d; }
   .task-card.done { opacity: 0.55; }
   .task-card.timer-active { border-color: #6366f1; background: #13131f; }
+  .task-card.selected { border-color: #6366f1; background: #16162a; }
 
   .check-btn { background: none; border: none; cursor: pointer; padding: 0; flex-shrink: 0; display: flex; margin-top: 2px; }
 
-  .task-body { flex: 1; min-width: 0; }
-  .task-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .priority-bar { width: 3px; height: 16px; border-radius: 2px; flex-shrink: 0; }
-  .task-title { font-size: 0.9rem; color: #e2e8f0; }
+  .task-body { flex: 1; min-width: 0; cursor: pointer; }
+  .task-title-row { display: flex; align-items: flex-start; gap: 8px; }
+  .priority-bar { width: 3px; height: 16px; border-radius: 2px; flex-shrink: 0; margin-top: 3px; }
+  .task-title { font-size: 0.9rem; color: #e2e8f0; flex: 1; min-width: 0; word-break: break-word; }
   .task-card.done .task-title { text-decoration: line-through; color: #64748b; }
 
   .timer-running {
@@ -546,22 +597,6 @@
   }
   .tag-chip:hover { color: #a78bfa; text-decoration: underline; }
 
-  .task-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.12s; align-items: center; flex-shrink: 0; padding-top: 1px; }
-  .task-card:hover .task-actions, .task-actions.always-visible { opacity: 1; }
-
-  .action-btn {
-    width: 28px; height: 28px; border-radius: 6px; border: none;
-    background: transparent; color: #6b7280; cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
-    transition: background 0.12s, color 0.12s;
-  }
-  .action-btn:hover { background: #1e1e2e; color: #e2e8f0; }
-  .action-btn.danger:hover { background: #2a0e0e; color: #f87171; }
-  .action-btn.timer-play { color: #6366f1; }
-  .action-btn.timer-play:hover { background: #1e1e3a; color: #818cf8; }
-  .action-btn.timer-stop { color: #f87171; }
-  .action-btn.timer-stop:hover { background: #2a0e0e; color: #fca5a5; }
-
   /* Work sessions panel */
   .sessions-panel {
     background: #0f0f14; border: 1px solid #1e1e2e; border-top: none;
@@ -575,8 +610,37 @@
   .session-dur { color: #a78bfa; white-space: nowrap; }
   .sessions-total { font-size: 0.75rem; color: #64748b; padding-top: 4px; border-top: 1px solid #1e1e2e; margin-top: 2px; }
 
+  /* Selection bar */
+  .selection-bar {
+    position: sticky; bottom: 0;
+    background: #1a1a2e; border: 1px solid #6366f1; border-radius: 14px;
+    padding: 10px 14px; display: flex; align-items: center; gap: 6px;
+    box-shadow: 0 -4px 24px rgba(99, 102, 241, 0.15);
+    margin-top: auto;
+  }
+  .sel-count { font-size: 0.85rem; color: #a5b4fc; font-weight: 600; white-space: nowrap; }
+  .sel-spacer { flex: 1; }
+  .sel-btn {
+    display: flex; align-items: center; gap: 5px;
+    padding: 6px 12px; border-radius: 8px; border: 1px solid #2d2d3d;
+    background: transparent; color: #cbd5e1; font-size: 0.8rem; cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    white-space: nowrap;
+  }
+  .sel-btn:hover { background: #1e1e3a; border-color: #6366f1; color: #e2e8f0; }
+  .sel-btn.ghost { color: #9ca3af; }
+  .sel-btn.ghost:hover { color: #e2e8f0; }
+  .sel-btn.icon-only { padding: 6px 8px; }
+  .sel-btn.danger { color: #f87171; border-color: #3a1414; }
+  .sel-btn.danger:hover { background: #2a0e0e; border-color: #f87171; }
+  .sel-btn.timer-play { color: #818cf8; border-color: #1e1e3a; }
+  .sel-btn.timer-play:hover { background: #1e1e3a; border-color: #6366f1; }
+  .sel-btn.timer-stop { color: #f87171; border-color: #3a1414; }
+  .sel-btn.timer-stop:hover { background: #2a0e0e; border-color: #f87171; }
+
   @media (max-width: 600px) {
-    .tasks { padding: 16px; }
+    .tasks { padding: 16px 16px 12px; }
     .form-row { flex-direction: column; }
+    .sel-btn { padding: 6px 8px; }
   }
 </style>

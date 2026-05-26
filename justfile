@@ -1,7 +1,7 @@
 set dotenv-load
 
 export ANDROID_HOME := env_var_or_default("ANDROID_HOME", env_var('HOME') + "/Android/Sdk")
-export NDK_HOME := env_var_or_default("NDK_HOME", env_var('HOME') + "/Android/Sdk/ndk/27.0.12077973")
+export NDK_HOME := env_var('HOME') + "/Android/Sdk/ndk/29.0.13846066"
 export PATH := env_var('HOME') + "/Android/Sdk/cmdline-tools/latest/bin:" + env_var('HOME') + "/Android/Sdk/platform-tools:" + env_var('PATH')
 
 # List all recipes

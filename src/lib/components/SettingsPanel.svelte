@@ -59,7 +59,7 @@
     <!-- GitHub Sync section -->
     <section class="settings-section">
       <h3>GitHub Sync</h3>
-      <p class="section-desc">Connect a GitHub repository to sync your notes and tasks across devices.</p>
+      <p class="section-desc">Connect a GitHub repository to sync your notes and todos across devices. Uses the GitHub API — no git binary required.</p>
 
       <div class="field">
         <label for="s-repo-url">Repository URL</label>
@@ -68,15 +68,6 @@
           placeholder="https://github.com/username/repo"
         />
         <div class="field-hint">HTTPS URL of your GitHub repository</div>
-      </div>
-
-      <div class="field">
-        <label for="s-repo-path">Local path</label>
-        <input
-          id="s-repo-path" class="input" bind:value={form.repo_path}
-          placeholder="/home/user/todoto-data"
-        />
-        <div class="field-hint">Local folder where data will be stored and git-tracked</div>
       </div>
 
       <div class="field">
@@ -92,19 +83,8 @@
           </button>
         </div>
         <div class="field-hint">
-          GitHub PAT with <strong>repo</strong> scope.
+          GitHub PAT with <strong>repo</strong> scope (Contents read &amp; write).
           <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer">Create token →</a>
-        </div>
-      </div>
-
-      <div class="two-col">
-        <div class="field">
-          <label for="s-git-user">Git username</label>
-          <input id="s-git-user" class="input" bind:value={form.git_username} placeholder="Your Name" />
-        </div>
-        <div class="field">
-          <label for="s-git-email">Git email</label>
-          <input id="s-git-email" class="input" type="email" bind:value={form.git_email} placeholder="you@email.com" />
         </div>
       </div>
     </section>

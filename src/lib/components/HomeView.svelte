@@ -69,14 +69,20 @@
         <ul class="task-list">
           {#each $pendingTodos.slice(0, 5) as todo}
             <li class="task-item" onclick={() => activeView.set('tasks')}>
-              <span class="priority-dot" style="background:{priorityColor(todo.priority)}"></span>
-              <span class="task-title">{todo.title}</span>
-              {#if todo.due_date}
-                <span class="due-chip">{todo.due_date}</span>
+              <div class="task-top">
+                <span class="priority-dot" style="background:{priorityColor(todo.priority)}"></span>
+                <span class="task-title">{todo.title}</span>
+              </div>
+              {#if todo.due_date || todo.tags.length > 0}
+                <div class="task-meta">
+                  {#if todo.due_date}
+                    <span class="due-chip">{todo.due_date}</span>
+                  {/if}
+                  {#each todo.tags as tag}
+                    <span class="tag-chip">#{tag}</span>
+                  {/each}
+                </div>
               {/if}
-              {#each todo.tags as tag}
-                <span class="tag-chip">#{tag}</span>
-              {/each}
             </li>
           {/each}
         </ul>
@@ -162,6 +168,8 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    min-width: 0;
+    overflow: hidden;
   }
   .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
   h2 { font-size: 0.95rem; font-weight: 600; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -180,13 +188,15 @@
   }
 
   .task-item {
-    display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    display: flex; flex-direction: column; gap: 4px; padding: 8px 10px;
     border-radius: 8px; cursor: pointer; transition: background 0.12s;
     font-size: 0.875rem;
   }
   .task-item:hover { background: #1a1a28; }
+  .task-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .priority-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-  .task-title { flex: 1; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .task-title { color: #e2e8f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+  .task-meta { display: flex; flex-wrap: wrap; gap: 6px; padding-left: 15px; }
 
   .doc-item {
     padding: 10px 10px; border-radius: 8px; cursor: pointer;

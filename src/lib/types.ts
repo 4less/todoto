@@ -9,6 +9,11 @@ export interface Note {
   tags: string[];
 }
 
+export interface WorkSession {
+  start: string; // ISO datetime
+  end: string;   // ISO datetime
+}
+
 export interface Todo {
   id: string;
   title: string;
@@ -18,6 +23,9 @@ export interface Todo {
   created_at: string;
   updated_at: string;
   tags: string[];
+  started_at: string | null;
+  finished_at: string | null;
+  work_sessions: WorkSession[];
 }
 
 export interface Settings {

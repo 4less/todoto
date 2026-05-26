@@ -10,7 +10,11 @@ export const api = {
   getTodos: () => invoke<Todo[]>('get_todos'),
   saveTodo: (todo: Partial<Todo> & { title: string }) =>
     invoke<Todo>('save_todo', {
-      todo: { id: '', done: false, priority: 'medium', due_date: null, tags: [], ...todo },
+      todo: {
+        id: '', done: false, priority: 'medium', due_date: null, tags: [],
+        started_at: null, finished_at: null, work_sessions: [],
+        ...todo,
+      },
     }),
   deleteTodo: (id: string) => invoke<void>('delete_todo', { id }),
 

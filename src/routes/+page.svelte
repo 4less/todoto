@@ -81,6 +81,7 @@
   <!-- Desktop sidebar -->
   <nav class="sidebar">
     <div class="sidebar-logo">
+      <img src="/logo.png" alt="todoto" class="logo-img" />
       <span class="logo-text">todoto</span>
     </div>
 
@@ -169,7 +170,8 @@
     gap: 4px;
   }
 
-  .sidebar-logo { padding: 4px 8px 16px; border-bottom: 1px solid #1e1e2e; margin-bottom: 8px; }
+  .sidebar-logo { padding: 4px 8px 16px; border-bottom: 1px solid #1e1e2e; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+  .logo-img { width: 24px; height: 24px; object-fit: contain; }
   .logo-text {
     font-size: 1.3rem; font-weight: 700;
     background: linear-gradient(135deg, #6366f1, #a78bfa);

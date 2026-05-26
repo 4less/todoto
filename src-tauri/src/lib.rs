@@ -23,6 +23,12 @@ pub struct Note {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkSession {
+    pub start: String,
+    pub end: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Todo {
     pub id: String,
     pub title: String,
@@ -33,6 +39,12 @@ pub struct Todo {
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub finished_at: Option<String>,
+    #[serde(default)]
+    pub work_sessions: Vec<WorkSession>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

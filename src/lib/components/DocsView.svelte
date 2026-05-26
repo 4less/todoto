@@ -778,6 +778,7 @@
   :global(.preview-content th, .preview-content td) { border: 1px solid #1e1e2e; padding: 8px 12px; text-align: left; }
   :global(.preview-content th) { background: #1e1e2e; }
   :global(.preview-content hr) { border: none; border-top: 1px solid #1e1e2e; margin: 20px 0; }
+  :global(.preview-content img) { max-width: 100%; height: auto; border-radius: 6px; }
 
   .no-doc {
     flex: 1; display: flex; flex-direction: column; align-items: center;

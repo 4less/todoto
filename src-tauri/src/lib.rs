@@ -476,8 +476,18 @@ fn encode_url_path(path: &str) -> String {
         .join("/")
 }
 
+fn is_image_extension(ext: &str) -> bool {
+    matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico")
+}
+
 fn is_synced_file(path: &str) -> bool {
-    path.ends_with(".md") || path == "todos.json"
+    if path.ends_with(".md") || path == "todos.json" {
+        return true;
+    }
+    if let Some(ext) = path.rsplit('.').next() {
+        return is_image_extension(ext);
+    }
+    false
 }
 
 // Returns map of repo-relative path → GitHub blob SHA for all tracked files.
@@ -547,6 +557,50 @@ async fn gh_put_file(
     Ok(put_resp.content.sha)
 }
 
+// Downloads a binary file from GitHub. Returns (raw_bytes, blob_sha).
+async fn gh_get_binary_file(client: &Client, owner: &str, repo: &str, path: &str) -> Result<(Vec<u8>, String), String> {
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/contents/{}",
+        encode_url_path(path)
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("get {path}: HTTP {}", resp.status()));
+    }
+    let file: GhFileResponse = resp.json().await.map_err(|e| e.to_string())?;
+    let clean = file.content.replace(['\n', '\r'], "");
+    let bytes = B64.decode(&clean).map_err(|e| format!("decode {path}: {e}"))?;
+    Ok((bytes, file.sha))
+}
+
+// Creates or updates a binary file on GitHub. Returns the new blob SHA.
+async fn gh_put_binary_file(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    path: &str,
+    bytes: &[u8],
+    current_sha: Option<&str>,
+) -> Result<String, String> {
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/contents/{}",
+        encode_url_path(path)
+    );
+    let body = GhPutBody {
+        message: &format!("sync: {}", Utc::now().format("%Y-%m-%d %H:%M UTC")),
+        content: B64.encode(bytes),
+        sha: current_sha,
+    };
+    let resp = client.put(&url).json(&body).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("put {path}: HTTP {status}: {text}"));
+    }
+    let put_resp: GhPutResponse = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(put_resp.content.sha)
+}
+
 async fn gh_delete_file(client: &Client, owner: &str, repo: &str, path: &str, sha: &str) -> Result<(), String> {
     let url = format!(
         "https://api.github.com/repos/{owner}/{repo}/contents/{}",
@@ -567,10 +621,17 @@ async fn gh_delete_file(client: &Client, owner: &str, repo: &str, path: &str, sh
 
 // ── Local file scanning ───────────────────────────────────────────────────────
 
-// Returns all tracked local files as a map of forward-slash relative path → content.
+// Returns all tracked local text files as a map of forward-slash relative path → content.
 fn scan_local_files(repo_path: &Path) -> HashMap<String, String> {
     let mut files = HashMap::new();
     scan_local_dir(repo_path, repo_path, &mut files);
+    files
+}
+
+// Returns all tracked local image files as a map of forward-slash relative path → raw bytes.
+fn scan_local_binary_files(repo_path: &Path) -> HashMap<String, Vec<u8>> {
+    let mut files = HashMap::new();
+    scan_local_binary_dir(repo_path, repo_path, &mut files);
     files
 }
 
@@ -589,9 +650,31 @@ fn scan_local_dir(dir: &Path, base: &Path, out: &mut HashMap<String, String>) {
         } else if path.extension().map_or(false, |e| e == "md") || name == "todos.json" {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(rel) = path.strip_prefix(base) {
-                    // Always use '/' for GitHub API paths regardless of OS
                     let rel_str = rel.to_string_lossy().replace('\\', "/");
                     out.insert(rel_str, content);
+                }
+            }
+        }
+    }
+}
+
+fn scan_local_binary_dir(dir: &Path, base: &Path, out: &mut HashMap<String, Vec<u8>>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|e| e.path());
+    for entry in entries {
+        let path = entry.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            scan_local_binary_dir(&path, base, out);
+        } else if path.extension().map_or(false, |e| is_image_extension(&e.to_string_lossy())) {
+            if let Ok(bytes) = fs::read(&path) {
+                if let Ok(rel) = path.strip_prefix(base) {
+                    let rel_str = rel.to_string_lossy().replace('\\', "/");
+                    out.insert(rel_str, bytes);
                 }
             }
         }
@@ -778,6 +861,71 @@ async fn do_sync(settings: &Settings) -> SyncResult {
         }
     }
 
+    // ── Binary files (images) ─────────────────────────────────────────────────
+    let local_binary = scan_local_binary_files(&repo_path);
+
+    for (path, bytes) in &local_binary {
+        let local_sha = github_blob_sha(bytes);
+        match github_map.get(path) {
+            Some(gh_sha) if *gh_sha == local_sha => {
+                new_manifest.insert(path.clone(), gh_sha.clone());
+            }
+            Some(gh_sha) => {
+                let manifest_sha = manifest.files.get(path);
+                let local_changed = manifest_sha.map_or(true, |ms| ms != &local_sha);
+                if local_changed {
+                    match gh_put_binary_file(&client, &owner, &repo, path, bytes, Some(gh_sha)).await {
+                        Ok(new_sha) => { new_manifest.insert(path.clone(), new_sha); uploaded += 1; }
+                        Err(e) => errors.push(e),
+                    }
+                } else {
+                    match gh_get_binary_file(&client, &owner, &repo, path).await {
+                        Ok((remote_bytes, sha)) => {
+                            let local_path = repo_path.join(path);
+                            if let Some(p) = local_path.parent() { fs::create_dir_all(p).ok(); }
+                            if fs::write(&local_path, &remote_bytes).is_ok() {
+                                new_manifest.insert(path.clone(), sha);
+                                downloaded += 1;
+                            }
+                        }
+                        Err(e) => errors.push(e),
+                    }
+                }
+            }
+            None => {
+                match gh_put_binary_file(&client, &owner, &repo, path, bytes, None).await {
+                    Ok(new_sha) => { new_manifest.insert(path.clone(), new_sha); uploaded += 1; }
+                    Err(e) => errors.push(e),
+                }
+            }
+        }
+    }
+
+    // Download new binary files from GitHub not present locally
+    for (path, _gh_sha) in &github_map {
+        if local_binary.contains_key(path) || local_files.contains_key(path) {
+            continue;
+        }
+        if manifest.files.contains_key(path) {
+            continue;
+        }
+        let ext = path.rsplit('.').next().unwrap_or("");
+        if !is_image_extension(ext) {
+            continue;
+        }
+        match gh_get_binary_file(&client, &owner, &repo, path).await {
+            Ok((bytes, sha)) => {
+                let local_path = repo_path.join(path);
+                if let Some(p) = local_path.parent() { fs::create_dir_all(p).ok(); }
+                if fs::write(&local_path, &bytes).is_ok() {
+                    new_manifest.insert(path.clone(), sha);
+                    downloaded += 1;
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+
     save_manifest(&repo_path, &SyncManifest { files: new_manifest });
 
     let message = if errors.is_empty() {
@@ -924,22 +1072,8 @@ fn read_file_base64(path: String) -> Result<String, String> {
 
 #[tauri::command]
 fn find_asset(note_dir: String, src: String) -> Option<String> {
-    let base = Path::new(&note_dir);
-    let direct = base.join(&src);
-    if direct.exists() {
-        return Some(direct.to_string_lossy().into_owned());
-    }
-    if let Ok(entries) = fs::read_dir(base) {
-        for entry in entries.flatten() {
-            if entry.file_type().map_or(false, |t| t.is_dir()) {
-                let candidate = entry.path().join(&src);
-                if candidate.exists() {
-                    return Some(candidate.to_string_lossy().into_owned());
-                }
-            }
-        }
-    }
-    None
+    let direct = Path::new(&note_dir).join(&src);
+    if direct.exists() { Some(direct.to_string_lossy().into_owned()) } else { None }
 }
 
 // ── App entry point ───────────────────────────────────────────────────────────

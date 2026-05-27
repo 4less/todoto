@@ -4,25 +4,21 @@
   import { api } from '$lib/api';
   import type { Note } from '$lib/types';
   import { extractTasksFromMarkdown } from '$lib/taskAnnotations';
-  import { EditorView, keymap } from '@codemirror/view';
-  import { EditorState } from '@codemirror/state';
-  import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-  import { markdown } from '@codemirror/lang-markdown';
-  import { oneDark } from '@codemirror/theme-one-dark';
-  import { marked } from 'marked';
-  import { invoke } from '@tauri-apps/api/core';
+  import { Crepe, CrepeFeature } from '@milkdown/crepe';
+  import '@milkdown/crepe/theme/common/style.css';
+  import '@milkdown/crepe/theme/nord-dark.css';
+  import { replaceAll } from '@milkdown/utils';
+  import { invoke, convertFileSrc } from '@tauri-apps/api/core';
   import { settings } from '$lib/stores';
 
   let { onTodosChanged }: { onTodosChanged: () => void } = $props();
 
-  // Editor DOM element — always mounted, never inside a conditional
   let editorEl: HTMLElement;
-  let editorView: EditorView | null = null;
+  let crepe: Crepe | null = null;
+  let currentMarkdown = '';
 
-  let previewMode = $state(false);
   let saving = $state(false);
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
-  let renderedHtml = $state('');
 
   // New note / folder form
   let showNewForm = $state(false);
@@ -64,74 +60,50 @@
     }
   });
 
-  $effect(() => {
-    const note = currentNote;
-    if (!note || !editorView) return;
-    if (note.id === lastLoadedId) return;
-    editorView.dispatch({
-      changes: { from: 0, to: editorView.state.doc.length, insert: note.content },
+  // Matches asset:// and http(s)://asset.localhost URLs produced by convertFileSrc
+  const ASSET_RE = /^(?:asset:\/\/localhost|https?:\/\/asset\.localhost)(\/.*)/;
+
+  // Convert relative image paths to asset:// URLs so Tauri's WebView can load
+  // them directly from the filesystem (assetProtocol is enabled in tauri.conf.json).
+  function makeImagesLoadable(content: string, folder: string): string {
+    const repoPath = $settings.repo_path;
+    if (!repoPath) return content;
+    const noteDir = [repoPath, folder].filter(Boolean).join('/');
+    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
+      if (src.startsWith('http') || src.startsWith('data:') || ASSET_RE.test(src)) return match;
+      const absPath = src.startsWith('/') ? src : `${noteDir}/${src}`;
+      return `![${alt}](${convertFileSrc(absPath)})`;
     });
-    void updatePreview(note.content);
-    lastLoadedId = note.id;
-  });
+  }
+
+  // Strip asset:// URLs back to paths relative to the note's folder for saving.
+  function stripAssetUrls(content: string, folder: string): string {
+    const repoPath = $settings.repo_path;
+    if (!repoPath) return content;
+    const noteDir = [repoPath, folder].filter(Boolean).join('/');
+    const prefix = noteDir + '/';
+    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
+      const m = src.match(ASSET_RE);
+      if (!m) return match;
+      // decodeURIComponent may give "//home/..." when convertFileSrc encoded the leading slash
+      let absPath = decodeURIComponent(m[1]);
+      if (absPath.startsWith('//')) absPath = absPath.slice(1);
+      if (absPath.startsWith(prefix)) return `![${alt}](${absPath.slice(prefix.length)})`;
+      return match;
+    });
+  }
 
   function loadNote(note: Note) {
+    if (saveTimer && currentNote && currentNote.id !== note.id) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      void saveCurrentNote();
+    }
     currentNote = note;
     lastLoadedId = note.id;
-    if (editorView) {
-      editorView.dispatch({
-        changes: { from: 0, to: editorView.state.doc.length, insert: note.content },
-      });
-    }
-    void updatePreview(note.content);
-  }
-
-  const MIME: Record<string, string> = {
-    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-    gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
-    bmp: 'image/bmp',
-  };
-
-  async function updatePreview(md: string) {
-    let html = marked.parse(md) as string;
-    if (currentNote && $settings.repo_path) {
-      const noteDir = [$settings.repo_path, currentNote.folder].filter(Boolean).join('/');
-      const matches = [...html.matchAll(/(<img[^>]*\ssrc=")([^"]+)(")/gi)];
-      for (const [full, pre, src, post] of matches) {
-        if (src.startsWith('http') || src.startsWith('data:')) continue;
-        const absPath = src.startsWith('/')
-          ? `${$settings.repo_path}${src}`
-          : await invoke<string | null>('find_asset', { noteDir, src }).catch(() => null);
-        if (!absPath) continue;
-        try {
-          const b64 = await invoke<string>('read_file_base64', { path: absPath });
-          const ext = absPath.split('.').pop()?.toLowerCase() ?? '';
-          const mime = MIME[ext] ?? 'image/png';
-          html = html.replace(full, `${pre}data:${mime};base64,${b64}${post}`);
-        } catch { /* leave broken */ }
-      }
-    }
-    renderedHtml = html;
-  }
-
-  // Rewrites relative image paths like "img/x.png" → "chipseq/img/x.png" so
-  // they resolve correctly in GitHub (relative to the .md file location).
-  async function normalizeImagePaths(content: string, noteDir: string): Promise<string> {
-    let result = content;
-    for (const match of [...content.matchAll(/!\[([^\]]*)\]\(([^)]+)\)/g)]) {
-      const [full, alt, src] = match;
-      if (src.startsWith('http') || src.startsWith('data:') || src.startsWith('/')) continue;
-      const absPath = await invoke<string | null>('find_asset', { noteDir, src }).catch(() => null);
-      if (!absPath) continue;
-      const prefix = noteDir + '/';
-      if (absPath.startsWith(prefix)) {
-        const correctedSrc = absPath.slice(prefix.length);
-        if (correctedSrc !== src) {
-          result = result.replace(full, `![${alt}](${correctedSrc})`);
-        }
-      }
-    }
-    return result;
+    currentMarkdown = note.content;
+    const display = makeImagesLoadable(note.content, note.folder ?? '');
+    crepe?.editor.action(replaceAll(display));
   }
 
   function scheduleSave() {
@@ -140,20 +112,9 @@
   }
 
   async function saveCurrentNote() {
-    if (!currentNote || !editorView) return;
-    let content = editorView.state.doc.toString();
+    if (!currentNote) return;
+    let content = currentMarkdown;
     const title = currentNote.title || extractTitle(content);
-
-    if ($settings.repo_path) {
-      const noteDir = [$settings.repo_path, currentNote.folder].filter(Boolean).join('/');
-      const normalized = await normalizeImagePaths(content, noteDir);
-      if (normalized !== content) {
-        editorView.dispatch({
-          changes: { from: 0, to: editorView.state.doc.length, insert: normalized },
-        });
-        content = normalized;
-      }
-    }
 
     saving = true;
     try {
@@ -344,38 +305,46 @@
   }
 
   onMount(() => {
-    const updateListener = EditorView.updateListener.of((update) => {
-      if (update.docChanged && currentNote) {
-        void updatePreview(update.state.doc.toString());
-        scheduleSave();
+    // Inject heading-gap fix once — CSS rules can't be set via :global() for this pattern
+    if (!document.getElementById('mk-h-fix')) {
+      const s = document.createElement('style');
+      s.id = 'mk-h-fix';
+      s.textContent = '.milkdown .ProseMirror h1,.milkdown .ProseMirror h2,.milkdown .ProseMirror h3,.milkdown .ProseMirror h4,.milkdown .ProseMirror h5,.milkdown .ProseMirror h6{margin-top:0!important;padding-top:0!important}';
+      document.head.appendChild(s);
+    }
+    const c = new Crepe({
+      root: editorEl,
+      defaultValue: '',
+      features: {
+        [CrepeFeature.AI]: false,
+        [CrepeFeature.ImageBlock]: false,
+        [CrepeFeature.TopBar]: false,
+        [CrepeFeature.Latex]: false,
+      },
+    });
+    c.on((api) => {
+      api.markdownUpdated((_, markdown) => {
+        currentMarkdown = stripAssetUrls(markdown, currentNote?.folder ?? '');
+        if (currentNote) scheduleSave();
+      });
+    });
+    void c.create().then(() => {
+      crepe = c;
+      const pm = editorEl.querySelector('.ProseMirror');
+      if (pm instanceof HTMLElement) pm.style.paddingTop = '0';
+      if (currentNote && currentMarkdown) {
+        crepe.editor.action(replaceAll(makeImagesLoadable(currentMarkdown, currentNote.folder ?? '')));
+      } else if ($notes.length > 0) {
+        const first = $notes[0];
+        selectedNoteId.set(first.id);
+        loadNote(first);
       }
     });
-
-    editorView = new EditorView({
-      state: EditorState.create({
-        doc: '',
-        extensions: [
-          history(),
-          keymap.of([...defaultKeymap, ...historyKeymap]),
-          markdown(),
-          oneDark,
-          EditorView.lineWrapping,
-          updateListener,
-        ],
-      }),
-      parent: editorEl,
-    });
-
-    if (!currentNote && $notes.length > 0) {
-      const first = $notes[0];
-      selectedNoteId.set(first.id);
-      loadNote(first);
-    }
   });
 
   onDestroy(() => {
-    if (saveTimer) { clearTimeout(saveTimer); saveCurrentNote(); }
-    editorView?.destroy();
+    if (saveTimer) { clearTimeout(saveTimer); void saveCurrentNote(); }
+    void crepe?.destroy();
   });
 </script>
 
@@ -560,28 +529,11 @@
         </div>
         <div class="toolbar-right">
           {#if saving}<span class="saving-indicator">saving…</span>{/if}
-          <button
-            class="view-toggle {previewMode ? 'active' : ''}"
-            onclick={() => (previewMode = !previewMode)}
-            title="{previewMode ? 'Switch to edit mode' : 'Switch to preview mode'}"
-          >
-            {#if previewMode}
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              Edit
-            {:else}
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-              Preview
-            {/if}
-          </button>
         </div>
       </div>
     {/if}
 
-    <div class="cm-wrapper" class:hidden={previewMode || !currentNote} bind:this={editorEl}></div>
-
-    {#if previewMode && currentNote}
-      <div class="preview-content">{@html renderedHtml}</div>
-    {/if}
+    <div class="milkdown-wrapper" class:hidden={!currentNote} bind:this={editorEl}></div>
 
     {#if !currentNote}
       <div class="no-doc">
@@ -591,7 +543,7 @@
       </div>
     {/if}
 
-    {#if currentNote && !previewMode}
+    {#if currentNote}
       <div class="editor-hint">
         Task syntax: <code>- [ ] Title #tag @YYYY-MM-DD !high</code> — auto-syncs to Tasks.
       </div>
@@ -742,43 +694,44 @@
   .folder-select:focus { border-color: #6366f1; }
 
   .saving-indicator { font-size: 0.72rem; color: #64748b; }
-  .view-toggle {
-    display: flex; align-items: center; gap: 5px;
-    padding: 5px 10px; border-radius: 7px; border: 1px solid #2d2d3d;
-    background: transparent; color: #9ca3af; font-size: 0.78rem; cursor: pointer; transition: all 0.12s;
-  }
-  .view-toggle:hover, .view-toggle.active { background: #1e1e3a; border-color: #6366f1; color: #818cf8; }
 
-  .cm-wrapper { flex: 1; overflow: auto; min-height: 0; }
-  .cm-wrapper.hidden { display: none; }
-  :global(.cm-editor) { height: 100%; font-size: 0.9rem; background: #0f0f14 !important; }
-  :global(.cm-scroller) {
-    font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace !important;
-    line-height: 1.65 !important;
-  }
-  :global(.cm-content) { padding: 16px 20px !important; }
+  /* ── Milkdown wrapper ── */
+  .milkdown-wrapper { flex: 1; overflow-y: auto; min-height: 0; }
+  .milkdown-wrapper.hidden { display: none; }
 
-  .preview-content {
-    flex: 1; overflow-y: auto; padding: 24px 32px;
-    color: #e2e8f0; line-height: 1.75; max-width: 820px;
+  /* Override Crepe nord-dark variables to match the app's indigo palette */
+  :global(.milkdown) {
+    --crepe-color-background: #0f0f14;
+    --crepe-color-surface: #13131a;
+    --crepe-color-surface-low: #0f0f14;
+    --crepe-color-on-background: #e2e8f0;
+    --crepe-color-on-surface: #cbd5e1;
+    --crepe-color-on-surface-variant: #94a3b8;
+    --crepe-color-outline: #2d2d3d;
+    --crepe-color-primary: #6366f1;
+    --crepe-color-secondary: #1e1e3a;
+    --crepe-color-on-secondary: #a5b4fc;
+    --crepe-color-inline-code: #a78bfa;
+    --crepe-color-inline-area: #1e1e2e;
+    --crepe-color-hover: #1e1e3a;
+    --crepe-color-selected: rgba(99, 102, 241, 0.45);
+    --crepe-color-error: #f87171;
+    --crepe-shadow-1: none;
+    --crepe-shadow-2: none;
   }
-  :global(.preview-content h1) { font-size: 1.6rem; color: #f1f5f9; margin: 0 0 16px; }
-  :global(.preview-content h2) { font-size: 1.2rem; color: #e2e8f0; margin: 24px 0 10px; border-bottom: 1px solid #1e1e2e; padding-bottom: 6px; }
-  :global(.preview-content h3) { font-size: 1rem; color: #cbd5e1; margin: 20px 0 8px; }
-  :global(.preview-content p) { margin-bottom: 12px; }
-  :global(.preview-content code) { background: #1e1e2e; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.85em; color: #a78bfa; }
-  :global(.preview-content pre) { background: #1e1e2e; padding: 16px; border-radius: 8px; overflow-x: auto; margin-bottom: 16px; }
-  :global(.preview-content pre code) { background: none; padding: 0; }
-  :global(.preview-content ul, .preview-content ol) { padding-left: 24px; margin-bottom: 12px; }
-  :global(.preview-content li) { margin-bottom: 4px; }
-  :global(.preview-content input[type="checkbox"]) { margin-right: 6px; accent-color: #6366f1; }
-  :global(.preview-content blockquote) { border-left: 3px solid #6366f1; padding-left: 16px; color: #94a3b8; margin: 0 0 12px; }
-  :global(.preview-content a) { color: #818cf8; }
-  :global(.preview-content table) { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-  :global(.preview-content th, .preview-content td) { border: 1px solid #1e1e2e; padding: 8px 12px; text-align: left; }
-  :global(.preview-content th) { background: #1e1e2e; }
-  :global(.preview-content hr) { border: none; border-top: 1px solid #1e1e2e; margin: 20px 0; }
-  :global(.preview-content img) { max-width: 100%; height: auto; border-radius: 6px; }
+
+  /* Make editor fill the wrapper and use good prose sizing */
+  :global(.milkdown-wrapper .milkdown) { min-height: 100%; }
+  :global(.milkdown-wrapper .ProseMirror) {
+    padding: 4px 32px 24px !important;
+    max-width: 820px;
+    font-size: 0.925rem;
+    line-height: 1.75;
+    color: #e2e8f0;
+    caret-color: #818cf8;
+  }
+  /* Ensure block-edit handle positions relative to the wrapper, not viewport */
+  :global(.milkdown-wrapper .milkdown) { position: relative; }
 
   .no-doc {
     flex: 1; display: flex; flex-direction: column; align-items: center;

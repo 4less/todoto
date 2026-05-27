@@ -48,6 +48,8 @@ pub struct Todo {
     pub finished_at: Option<String>,
     #[serde(default)]
     pub work_sessions: Vec<WorkSession>,
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

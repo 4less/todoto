@@ -5,6 +5,7 @@
   import type { Todo, WorkSession } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
   import DatePicker from '$lib/components/DatePicker.svelte';
+  import { marked } from 'marked';
 
   // ── Filter state ──────────────────────────────────────────────────────────
   let filterStatus: 'all' | 'pending' | 'done' = $state('all');
@@ -38,6 +39,13 @@
   let tick = $state(0);
   let tickInterval: ReturnType<typeof setInterval> | null = null;
 
+  // ── Notes state ───────────────────────────────────────────────────────────
+  let notesOpenId: string | null = $state(null);
+  let notesContent: string = $state('');
+  let notesPreview: boolean = $state(false);
+  let notesHtml: string = $state('');
+  let notesSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
   $effect(() => {
     if (activeTimers.size > 0) {
       if (!tickInterval) tickInterval = setInterval(() => { tick++; }, 1000);
@@ -46,7 +54,10 @@
     }
   });
 
-  onDestroy(() => { if (tickInterval) clearInterval(tickInterval); });
+  onDestroy(() => {
+    if (tickInterval) clearInterval(tickInterval);
+    if (notesSaveTimer) clearTimeout(notesSaveTimer);
+  });
 
   // ── Derived ───────────────────────────────────────────────────────────────
   let allTags = $derived([...new Set($todos.flatMap((t) => t.tags))].sort());
@@ -171,6 +182,48 @@
     }
     selectedIds = new Set();
     confirmDelete = false;
+  }
+
+  // ── Notes ─────────────────────────────────────────────────────────────────
+
+  async function updateNotesHtml() {
+    notesHtml = await marked(notesContent) as string;
+  }
+
+  async function persistNotes(todo: Todo) {
+    const updated = await api.saveTodo({ ...todo, notes: notesContent || null });
+    todos.update((ts) => ts.map((t) => (t.id === updated.id ? updated : t)));
+  }
+
+  function onNotesInput(todo: Todo) {
+    void updateNotesHtml();
+    if (notesSaveTimer) clearTimeout(notesSaveTimer);
+    notesSaveTimer = setTimeout(() => void persistNotes(todo), 800);
+  }
+
+  function openNotes(todo: Todo) {
+    if (notesOpenId && notesOpenId !== todo.id) {
+      const prev = $todos.find((t) => t.id === notesOpenId);
+      if (prev) {
+        if (notesSaveTimer) { clearTimeout(notesSaveTimer); notesSaveTimer = null; }
+        void persistNotes(prev);
+      }
+    }
+    notesOpenId = todo.id;
+    notesContent = todo.notes ?? '';
+    notesPreview = false;
+    void updateNotesHtml();
+  }
+
+  function closeNotes() {
+    if (notesOpenId) {
+      const todo = $todos.find((t) => t.id === notesOpenId);
+      if (todo) {
+        if (notesSaveTimer) { clearTimeout(notesSaveTimer); notesSaveTimer = null; }
+        void persistNotes(todo);
+      }
+    }
+    notesOpenId = null;
   }
 
   // ── Formatting helpers ────────────────────────────────────────────────────
@@ -339,7 +392,7 @@
         {@const totalMs = totalSessionMs(sessions)}
         {@const isSelected = selectedIds.has(todo.id)}
 
-        <div class="task-card {todo.done ? 'done' : ''} {isTimerActive ? 'timer-active' : ''} {isSelected ? 'selected' : ''}">
+        <div class="task-card {todo.done ? 'done' : ''} {isTimerActive ? 'timer-active' : ''} {isSelected ? 'selected' : ''} {notesOpenId === todo.id ? 'notes-open' : ''}">
           {#if editId === todo.id}
             <!-- Inline edit -->
             <div class="edit-form">
@@ -371,6 +424,11 @@
               <div class="task-title-row">
                 <span class="priority-bar" style="background:{priorityColor(todo.priority)}" title="{todo.priority} priority"></span>
                 <span class="task-title">{todo.title}</span>
+                {#if todo.notes}
+                  <span class="notes-indicator" title="Has notes">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                  </span>
+                {/if}
                 {#if isTimerActive && timerStartMs !== undefined}
                   <span class="timer-running">{formatElapsed(timerStartMs)}</span>
                 {/if}
@@ -415,6 +473,36 @@
             <div class="sessions-total">Total: {formatDuration(totalMs)}</div>
           </div>
         {/if}
+
+        <!-- Inline notes panel -->
+        {#if notesOpenId === todo.id}
+          <div class="notes-panel">
+            <div class="notes-panel-header">
+              <span class="notes-panel-title">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                Notes
+              </span>
+              <div class="notes-panel-actions">
+                <button class="notes-mode-btn {!notesPreview ? 'active' : ''}" onclick={() => (notesPreview = false)}>Edit</button>
+                <button class="notes-mode-btn {notesPreview ? 'active' : ''}" onclick={async () => { notesPreview = true; await updateNotesHtml(); }}>Preview</button>
+                <button class="notes-close-btn" onclick={closeNotes} title="Close notes">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+            {#if notesPreview}
+              <div class="notes-preview">{@html notesHtml}</div>
+            {:else}
+              <textarea
+                class="notes-textarea"
+                bind:value={notesContent}
+                oninput={() => onNotesInput(todo)}
+                placeholder="Write markdown notes… (# heading, **bold**, - list, `code`)"
+                spellcheck="false"
+              ></textarea>
+            {/if}
+          </div>
+        {/if}
       {/each}
     {/if}
   </div>
@@ -452,6 +540,14 @@
           <button class="sel-btn" onclick={() => copyMarkdown(selTodo!)} title="Copy markdown">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             Copy
+          </button>
+          <button
+            class="sel-btn {notesOpenId === selTodo.id ? 'notes-active' : ''}"
+            onclick={() => notesOpenId === selTodo!.id ? closeNotes() : openNotes(selTodo!)}
+            title="{notesOpenId === selTodo.id ? 'Close notes' : (selTodo.notes ? 'Edit notes' : 'Add notes')}"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            {notesOpenId === selTodo.id ? 'Notes ✓' : (selTodo.notes ? 'Notes' : 'Notes')}
           </button>
         {/if}
         <button class="sel-btn danger" onclick={() => (confirmDelete = true)} title="Delete selected">
@@ -643,4 +739,108 @@
     .form-row { flex-direction: column; }
     .sel-btn { padding: 6px 8px; }
   }
+
+  /* Notes indicator on task card */
+  .notes-indicator {
+    display: flex; align-items: center;
+    color: #6366f1; opacity: 0.75; flex-shrink: 0;
+  }
+
+  /* Task card with notes open — square bottom corners to connect to panel */
+  .task-card.notes-open {
+    border-color: #6366f1;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    border-bottom-color: transparent;
+  }
+
+  /* Notes panel */
+  .notes-panel {
+    background: #0d0d12;
+    border: 1px solid #6366f1;
+    border-top: none;
+    border-radius: 0 0 10px 10px;
+    overflow: hidden;
+  }
+
+  .notes-panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 14px;
+    border-bottom: 1px solid #1e1e2e;
+    background: #111118;
+  }
+
+  .notes-panel-title {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 0.68rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.09em;
+    color: #6366f1;
+  }
+
+  .notes-panel-actions { display: flex; align-items: center; gap: 4px; }
+
+  .notes-mode-btn {
+    padding: 2px 9px; border-radius: 5px;
+    border: 1px solid #2d2d3d; background: transparent;
+    color: #9ca3af; font-size: 0.72rem; cursor: pointer;
+    transition: all 0.12s;
+  }
+  .notes-mode-btn:hover { border-color: #6366f1; color: #a5b4fc; }
+  .notes-mode-btn.active { background: #1e1e3a; border-color: #6366f1; color: #818cf8; }
+
+  .notes-close-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 5px;
+    border: 1px solid transparent; background: transparent;
+    color: #64748b; cursor: pointer; transition: all 0.12s; margin-left: 2px;
+  }
+  .notes-close-btn:hover { border-color: #3a1414; color: #f87171; background: #2a0e0e; }
+
+  .notes-textarea {
+    display: block; width: 100%; box-sizing: border-box;
+    background: transparent; border: none; outline: none;
+    color: #e2e8f0;
+    font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, monospace;
+    font-size: 0.83rem; line-height: 1.65;
+    padding: 14px 16px;
+    resize: vertical; min-height: 130px;
+  }
+  .notes-textarea::placeholder { color: #475569; }
+
+  /* Preview rendered markdown */
+  .notes-preview {
+    padding: 14px 16px; color: #cbd5e1;
+    font-size: 0.875rem; line-height: 1.7;
+    min-height: 60px;
+  }
+  .notes-preview :global(h1),
+  .notes-preview :global(h2),
+  .notes-preview :global(h3) { color: #f1f5f9; font-weight: 600; margin: 0.9em 0 0.35em; }
+  .notes-preview :global(h1) { font-size: 1.05rem; }
+  .notes-preview :global(h2) { font-size: 0.95rem; }
+  .notes-preview :global(h3) { font-size: 0.875rem; }
+  .notes-preview :global(p) { margin: 0.45em 0; }
+  .notes-preview :global(ul),
+  .notes-preview :global(ol) { padding-left: 1.4em; margin: 0.35em 0; }
+  .notes-preview :global(li) { margin: 0.15em 0; }
+  .notes-preview :global(code) {
+    background: #1e1e2e; border-radius: 4px; padding: 1px 5px;
+    font-family: ui-monospace, monospace; color: #a78bfa; font-size: 0.82em;
+  }
+  .notes-preview :global(pre) {
+    background: #1e1e2e; border-radius: 8px; padding: 10px 14px;
+    overflow-x: auto; margin: 0.5em 0;
+  }
+  .notes-preview :global(pre code) { background: transparent; padding: 0; }
+  .notes-preview :global(blockquote) {
+    border-left: 3px solid #6366f1; padding-left: 12px;
+    color: #94a3b8; margin: 0.5em 0;
+  }
+  .notes-preview :global(a) { color: #818cf8; }
+  .notes-preview :global(strong) { color: #f1f5f9; font-weight: 600; }
+  .notes-preview :global(hr) { border: none; border-top: 1px solid #1e1e2e; margin: 0.8em 0; }
+
+  /* Notes button active state in selection bar */
+  .sel-btn.notes-active { color: #818cf8; border-color: #6366f1; background: #1e1e3a; }
+  .sel-btn.notes-active:hover { background: #2a2050; }
 </style>

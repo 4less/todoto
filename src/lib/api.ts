@@ -12,7 +12,7 @@ export const api = {
     invoke<Todo>('save_todo', {
       todo: {
         id: '', done: false, priority: 'medium', due_date: null, tags: [],
-        started_at: null, finished_at: null, work_sessions: [],
+        started_at: null, finished_at: null, work_sessions: [], notes: null,
         ...todo,
       },
     }),

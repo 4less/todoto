@@ -3,6 +3,7 @@ import type { Note, Todo, Settings, SyncResult } from './types';
 
 export const api = {
   getNotes: () => invoke<Note[]>('get_notes'),
+  getFolders: () => invoke<string[]>('get_folders'),
   saveNote: (note: Partial<Note> & { title: string; content: string }) =>
     invoke<Note>('save_note', { note: { id: '', pinned: false, tags: [], folder: '', ...note } }),
   deleteNote: (id: string) => invoke<void>('delete_note', { id }),

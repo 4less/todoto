@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
-  import { notes, todos, settings, activeView, showSettings, syncState } from '$lib/stores';
+  import { notes, todos, settings, activeView, showSettings, syncState, diskFolders } from '$lib/stores';
   import HomeView from '$lib/components/HomeView.svelte';
   import TasksView from '$lib/components/TasksView.svelte';
   import DocsView from '$lib/components/DocsView.svelte';
@@ -12,10 +12,11 @@
   let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
 
   async function loadAll() {
-    const [n, t, s] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings()]);
+    const [n, t, s, f] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings(), api.getFolders()]);
     notes.set(n);
     todos.set(t);
     settings.set(s);
+    diskFolders.set(f);
     const lastSync = await api.getLastSync();
     syncState.update((st) => ({ ...st, lastSync }));
     scheduleAutoSync(s.auto_sync, s.sync_interval_seconds);
@@ -25,7 +26,8 @@
   // Any note that exists on disk with a newer updated_at replaces the store entry;
   // notes in the store but absent from disk are kept (may have pending saves).
   async function refreshNotesFromDisk() {
-    const fresh = await api.getNotes();
+    const [fresh, folders] = await Promise.all([api.getNotes(), api.getFolders()]);
+    diskFolders.set(folders);
     notes.update((current) => {
       const byId = new Map(current.map((n) => [n.id, n]));
       for (const n of fresh) {
@@ -50,9 +52,10 @@
     syncState.update((s) => ({ ...s, syncing: true }));
     try {
       const result = await api.syncNow();
-      const [n, t] = await Promise.all([api.getNotes(), api.getTodos()]);
+      const [n, t, f] = await Promise.all([api.getNotes(), api.getTodos(), api.getFolders()]);
       notes.set(n);
       todos.set(t);
+      diskFolders.set(f);
       syncState.set({ syncing: false, lastResult: result, lastSync: result.timestamp });
     } catch {
       syncState.update((s) => ({ ...s, syncing: false }));

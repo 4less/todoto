@@ -3,6 +3,7 @@ import type { Note, Todo, Settings, SyncResult, View } from './types';
 
 export const notes = writable<Note[]>([]);
 export const todos = writable<Todo[]>([]);
+export const diskFolders = writable<string[]>([]);
 export const settings = writable<Settings>({
   repo_path: '',
   repo_url: '',

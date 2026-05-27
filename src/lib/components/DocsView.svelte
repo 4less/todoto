@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { notes, todos, selectedNoteId } from '$lib/stores';
+  import { notes, todos, selectedNoteId, diskFolders } from '$lib/stores';
   import { api } from '$lib/api';
   import type { Note } from '$lib/types';
   import { extractTasksFromMarkdown } from '$lib/taskAnnotations';
@@ -79,9 +79,9 @@
     return $notes.filter(n => { const f = n.folder ?? ''; return f === path || f.startsWith(path + '/'); }).length;
   }
 
-  // Derived
+  // Derived — include folders from disk (so empty directories are visible in the tree)
   let allFolders = $derived(
-    [...new Set([...$notes.map((n) => n.folder ?? ''), ...pendingFolders])].filter(Boolean).sort()
+    [...new Set([...$notes.map((n) => n.folder ?? ''), ...$diskFolders, ...pendingFolders])].filter(Boolean).sort()
   );
   let folderTree = $derived(buildFolderTree(allFolders));
   let visibleNotes = $derived(
@@ -324,6 +324,7 @@
       // Named a new folder — add as pending so it appears in the tree without requiring a note right away
       const folderPath = parentPath ? `${parentPath}/${name}` : name;
       pendingFolders = [...pendingFolders, folderPath];
+      diskFolders.update((fs) => [...new Set([...fs, folderPath])]);
       expandPath(folderPath);
     }
   }

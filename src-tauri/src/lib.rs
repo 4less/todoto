@@ -346,6 +346,31 @@ fn scan_dir_for_notes(dir: &Path, repo_base: &Path, notes: &mut Vec<Note>) {
     }
 }
 
+fn scan_folders(repo_base: &Path) -> Vec<String> {
+    let mut folders: Vec<String> = Vec::new();
+    scan_folders_in(repo_base, repo_base, &mut folders);
+    folders.sort();
+    folders
+}
+
+fn scan_folders_in(dir: &Path, repo_base: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() { continue; }
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with('.') { continue; }
+        if path.parent() == Some(repo_base) && name == "img" { continue; }
+        if let Ok(rel) = path.strip_prefix(repo_base) {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if !rel_str.is_empty() {
+                out.push(rel_str);
+            }
+        }
+        scan_folders_in(&path, repo_base, out);
+    }
+}
+
 fn find_note_file(repo_base: &Path, id: &str) -> Option<PathBuf> {
     find_note_file_in(repo_base, repo_base, id)
 }
@@ -1016,6 +1041,16 @@ fn save_note(state: State<Mutex<AppState>>, mut note: Note) -> Result<Note, Stri
 }
 
 #[tauri::command]
+fn get_folders(state: State<Mutex<AppState>>) -> Vec<String> {
+    let state = state.lock().unwrap();
+    if state.settings.repo_path.is_empty() {
+        return vec![];
+    }
+    let repo_base = PathBuf::from(&state.settings.repo_path);
+    scan_folders(&repo_base)
+}
+
+#[tauri::command]
 fn delete_note(state: State<Mutex<AppState>>, id: String) -> Result<(), String> {
     let state = state.lock().unwrap();
     if state.settings.repo_path.is_empty() {
@@ -1161,6 +1196,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_notes,
+            get_folders,
             save_note,
             delete_note,
             get_todos,

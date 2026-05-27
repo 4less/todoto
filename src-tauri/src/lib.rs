@@ -210,8 +210,29 @@ fn note_file_path(repo_base: &Path, note: &Note) -> PathBuf {
 }
 
 fn write_note_file(repo_base: &Path, note: &Note) -> Result<(), String> {
-    let path = note_file_path(repo_base, note);
+    let mut path = note_file_path(repo_base, note);
     fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+
+    // Guard against silent overwrites: if a file already exists at this path
+    // with a different ID, use a unique filename to avoid clobbering the other note.
+    if path.exists() {
+        let existing_raw = fs::read_to_string(&path).unwrap_or_default();
+        let existing_id = existing_raw
+            .lines()
+            .find_map(|l| l.strip_prefix("id: "))
+            .map(str::trim)
+            .unwrap_or("");
+        if !existing_id.is_empty() && existing_id != note.id {
+            let short_id = &note.id[..note.id.len().min(8)];
+            let name = format!("{}_{}.md", sanitize_filename(&note.title), short_id);
+            path = if note.folder.is_empty() {
+                repo_base.join(name)
+            } else {
+                repo_base.join(&note.folder).join(name)
+            };
+        }
+    }
+
     let tags_str = note.tags.join(", ");
     let file_content = format!(
         "---\nid: {}\ntitle: {}\npinned: {}\ntags: {}\ncreated_at: {}\nupdated_at: {}\n---\n{}",
@@ -289,9 +310,20 @@ fn parse_note_file(path: &Path, repo_base: &Path) -> Option<Note> {
 }
 
 fn scan_notes(repo_base: &Path) -> Vec<Note> {
-    let mut notes = Vec::new();
-    scan_dir_for_notes(repo_base, repo_base, &mut notes);
-    notes
+    let mut raw: Vec<Note> = Vec::new();
+    scan_dir_for_notes(repo_base, repo_base, &mut raw);
+    // Deduplicate by ID: when two files share an ID, keep the most recently updated.
+    let mut by_id: HashMap<String, Note> = HashMap::new();
+    for note in raw {
+        let keep = match by_id.get(&note.id) {
+            Some(existing) => note.updated_at > existing.updated_at,
+            None => true,
+        };
+        if keep {
+            by_id.insert(note.id.clone(), note);
+        }
+    }
+    by_id.into_values().collect()
 }
 
 fn scan_dir_for_notes(dir: &Path, repo_base: &Path, notes: &mut Vec<Note>) {
@@ -302,9 +334,10 @@ fn scan_dir_for_notes(dir: &Path, repo_base: &Path, notes: &mut Vec<Note>) {
         let path = entry.path();
         if path.is_dir() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if !name.starts_with('.') {
-                scan_dir_for_notes(&path, repo_base, notes);
-            }
+            // Skip hidden dirs and the global image store at the repo root
+            if name.starts_with('.') { continue; }
+            if path.parent() == Some(repo_base) && name == "img" { continue; }
+            scan_dir_for_notes(&path, repo_base, notes);
         } else if path.extension().map(|e| e == "md").unwrap_or(false) {
             if let Some(note) = parse_note_file(&path, repo_base) {
                 notes.push(note);

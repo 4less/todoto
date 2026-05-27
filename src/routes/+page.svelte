@@ -21,6 +21,25 @@
     scheduleAutoSync(s.auto_sync, s.sync_interval_seconds);
   }
 
+  // Merge notes from disk into the store without discarding in-memory edits.
+  // Any note that exists on disk with a newer updated_at replaces the store entry;
+  // notes in the store but absent from disk are kept (may have pending saves).
+  async function refreshNotesFromDisk() {
+    const fresh = await api.getNotes();
+    notes.update((current) => {
+      const byId = new Map(current.map((n) => [n.id, n]));
+      for (const n of fresh) {
+        const existing = byId.get(n.id);
+        if (!existing || n.updated_at > existing.updated_at) {
+          byId.set(n.id, n);
+        }
+      }
+      return [...byId.values()].sort(
+        (a, b) => Number(b.pinned) - Number(a.pinned) || b.updated_at.localeCompare(a.updated_at)
+      );
+    });
+  }
+
   function scheduleAutoSync(enabled: boolean, intervalSecs: number) {
     if (autoSyncTimer) clearInterval(autoSyncTimer);
     if (!enabled || intervalSecs <= 0) return;
@@ -49,10 +68,13 @@
 
   onMount(() => {
     loadAll();
+    const onFocus = () => void refreshNotesFromDisk();
     window.addEventListener('keydown', handleKeydown);
+    window.addEventListener('focus', onFocus);
     return () => {
       if (autoSyncTimer) clearInterval(autoSyncTimer);
       window.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener('focus', onFocus);
     };
   });
 

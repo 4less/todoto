@@ -8,22 +8,32 @@
   import '@milkdown/crepe/theme/common/style.css';
   import '@milkdown/crepe/theme/nord-dark.css';
   import { replaceAll } from '@milkdown/utils';
-  import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+  import { editorViewCtx } from '@milkdown/core';
+  import { convertFileSrc } from '@tauri-apps/api/core';
   import { settings } from '$lib/stores';
 
   let { onTodosChanged }: { onTodosChanged: () => void } = $props();
 
   let editorEl: HTMLElement;
   let crepe: Crepe | null = null;
-  let currentMarkdown = '';
+  let currentMarkdown = $state('');
 
   let saving = $state(false);
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  // Prevents scheduling autosave during the synchronous replaceAll() call in loadNote.
+  let loadingNote = false;
 
-  // New note / folder form
-  let showNewForm = $state(false);
-  let newTitle = $state('');
-  let newFolder = $state('');
+  // Inline creation (VS Code-style)
+  let inlineCreate: { type: 'note' | 'folder'; parentPath: string } | null = $state(null);
+  let inlineCreateValue = $state('');
+  // Folders that have been named but have no notes yet — kept so the tree shows them
+  let pendingFolders = $state<string[]>([]);
+
+  // Header "+" dropdown
+  let showHeaderMenu = $state(false);
+
+  // Right-click context menu
+  let contextMenu: { x: number; y: number; folderPath: string } | null = $state(null);
 
   // Folder management
   let selectedFolder: string | null = $state(null);
@@ -32,6 +42,7 @@
   // Current note
   let currentNote: Note | null = $state(null);
   let lastLoadedId = '';
+  let rawMode = $state(false);
 
   // Rename state
   let renamingNoteId: string | null = $state(null);
@@ -46,17 +57,48 @@
   let draggedNoteId: string | null = $state(null);
   let dragTarget: string | null = $state(null); // folder being hovered; '' = root
 
+  interface FolderTreeNode { name: string; fullPath: string; children: FolderTreeNode[]; }
+
+  function buildFolderTree(paths: string[]): FolderTreeNode[] {
+    const root: FolderTreeNode[] = [];
+    for (const path of paths.filter(Boolean).sort()) {
+      const parts = path.split('/');
+      let level = root;
+      let built = '';
+      for (const part of parts) {
+        built = built ? `${built}/${part}` : part;
+        let node = level.find(n => n.name === part);
+        if (!node) { node = { name: part, fullPath: built, children: [] }; level.push(node); }
+        level = node.children;
+      }
+    }
+    return root;
+  }
+
+  function subtreeNoteCount(path: string): number {
+    return $notes.filter(n => { const f = n.folder ?? ''; return f === path || f.startsWith(path + '/'); }).length;
+  }
+
   // Derived
-  let allFolders = $derived([...new Set($notes.map((n) => n.folder ?? ''))].sort());
+  let allFolders = $derived(
+    [...new Set([...$notes.map((n) => n.folder ?? ''), ...pendingFolders])].filter(Boolean).sort()
+  );
+  let folderTree = $derived(buildFolderTree(allFolders));
   let visibleNotes = $derived(
-    selectedFolder === null ? $notes : $notes.filter((n) => (n.folder ?? '') === selectedFolder)
+    selectedFolder === null
+      ? $notes
+      : $notes.filter(n => { const f = n.folder ?? ''; return f === selectedFolder || f.startsWith(selectedFolder + '/'); })
   );
 
   $effect(() => {
     const id = $selectedNoteId;
     if (id && id !== lastLoadedId) {
       const note = $notes.find((n) => n.id === id);
-      if (note) loadNote(note);
+      if (note) {
+        loadNote(note);
+        // Ensure all ancestor folders are expanded so the note is visible in the tree
+        if (note.folder) expandPath(note.folder);
+      }
     }
   });
 
@@ -65,30 +107,44 @@
 
   // Convert relative image paths to asset:// URLs so Tauri's WebView can load
   // them directly from the filesystem (assetProtocol is enabled in tauri.conf.json).
-  function makeImagesLoadable(content: string, folder: string): string {
+  // Splits "url" or `url "title"` or `url 'title'` into [url, title].
+  function splitUrlTitle(raw: string): [string, string] {
+    const m = raw.match(/^(\S+)(?:\s+(["'(].*["')]\s*))?$/);
+    return m ? [m[1], m[2] ?? ''] : [raw, ''];
+  }
+
+  // Images are always resolved from the repo root (global img/ directory).
+  // A reference like `img/diagram.png` always means `{repoPath}/img/diagram.png`,
+  // regardless of which folder the note lives in — so moving/renaming notes never
+  // breaks image links.
+  function makeImagesLoadable(content: string, _folder: string): string {
     const repoPath = $settings.repo_path;
     if (!repoPath) return content;
-    const noteDir = [repoPath, folder].filter(Boolean).join('/');
-    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
+    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, raw) => {
+      const [src, title] = splitUrlTitle(raw);
       if (src.startsWith('http') || src.startsWith('data:') || ASSET_RE.test(src)) return match;
-      const absPath = src.startsWith('/') ? src : `${noteDir}/${src}`;
-      return `![${alt}](${convertFileSrc(absPath)})`;
+      const absPath = src.startsWith('/') ? src : `${repoPath}/${src}`;
+      const assetUrl = convertFileSrc(absPath);
+      return title ? `![${alt}](${assetUrl} ${title})` : `![${alt}](${assetUrl})`;
     });
   }
 
-  // Strip asset:// URLs back to paths relative to the note's folder for saving.
-  function stripAssetUrls(content: string, folder: string): string {
+  // Strip asset:// URLs back to repo-root-relative paths for saving.
+  function stripAssetUrls(content: string, _folder: string): string {
     const repoPath = $settings.repo_path;
     if (!repoPath) return content;
-    const noteDir = [repoPath, folder].filter(Boolean).join('/');
-    const prefix = noteDir + '/';
-    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
+    const prefix = repoPath + '/';
+    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, raw) => {
+      const [src, title] = splitUrlTitle(raw);
       const m = src.match(ASSET_RE);
       if (!m) return match;
       // decodeURIComponent may give "//home/..." when convertFileSrc encoded the leading slash
       let absPath = decodeURIComponent(m[1]);
       if (absPath.startsWith('//')) absPath = absPath.slice(1);
-      if (absPath.startsWith(prefix)) return `![${alt}](${absPath.slice(prefix.length)})`;
+      if (absPath.startsWith(prefix)) {
+        const rel = absPath.slice(prefix.length);
+        return title ? `![${alt}](${rel} ${title})` : `![${alt}](${rel})`;
+      }
       return match;
     });
   }
@@ -103,7 +159,63 @@
     lastLoadedId = note.id;
     currentMarkdown = note.content;
     const display = makeImagesLoadable(note.content, note.folder ?? '');
+    loadingNote = true;
     crepe?.editor.action(replaceAll(display));
+    loadingNote = false;
+    // Ensure ancestor folders are expanded so the note is visible in the sidebar
+    if (note.folder) expandPath(note.folder);
+  }
+
+  function toggleRaw() {
+    if (!rawMode) {
+      rawMode = true;
+    } else {
+      rawMode = false;
+      if (crepe && currentNote) {
+        crepe.editor.action(replaceAll(makeImagesLoadable(currentMarkdown, currentNote.folder ?? '')));
+      }
+    }
+  }
+
+  // Ctrl+= promotes heading (paragraph→h6→h5→…→h1)
+  // Ctrl+-  demotes heading  (h1→h2→…→h6→paragraph)
+  function handleHeadingShortcut(e: KeyboardEvent) {
+    if (!e.ctrlKey || rawMode || !crepe) return;
+    const promote = e.key === '=' || e.key === '+';
+    const demote  = e.key === '-';
+    if (!promote && !demote) return;
+    e.preventDefault();
+
+    crepe.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const { state } = view;
+      const { from, to } = state.selection;
+      const selFrom = state.selection.$from;
+      const { schema } = state;
+
+      const parent = selFrom.parent;
+      let level = 0; // 0 = paragraph
+      if (parent.type === schema.nodes.heading) {
+        level = parent.attrs.level as number;
+      } else if (parent.type !== schema.nodes.paragraph) {
+        return; // inside a list item, code block, etc. — ignore
+      }
+
+      let tr;
+      if (promote) {
+        if (level === 1) return; // already h1, can't go further
+        const next = level === 0 ? 6 : level - 1;
+        tr = state.tr.setBlockType(from, to, schema.nodes.heading, { level: next });
+      } else {
+        if (level === 0) return; // already paragraph, can't go further
+        if (level === 6) {
+          tr = state.tr.setBlockType(from, to, schema.nodes.paragraph);
+        } else {
+          tr = state.tr.setBlockType(from, to, schema.nodes.heading, { level: level + 1 });
+        }
+      }
+      view.dispatch(tr);
+    });
   }
 
   function scheduleSave() {
@@ -113,14 +225,20 @@
 
   async function saveCurrentNote() {
     if (!currentNote) return;
-    let content = currentMarkdown;
-    const title = currentNote.title || extractTitle(content);
+    // Capture both synchronously before any await — currentNote/currentMarkdown
+    // can change while the async save is in flight if the user switches notes.
+    const noteToSave = currentNote;
+    const content = currentMarkdown;
+    const title = noteToSave.title || extractTitle(content);
 
     saving = true;
     try {
-      const saved = await api.saveNote({ ...currentNote, content, title });
-      currentNote = saved;
-      lastLoadedId = saved.id;
+      const saved = await api.saveNote({ ...noteToSave, content, title });
+      // Only update the displayed note if the user hasn't switched away
+      if (currentNote?.id === noteToSave.id) {
+        currentNote = saved;
+        lastLoadedId = saved.id;
+      }
       notes.update((ns) => ns.map((n) => (n.id === saved.id ? saved : n)));
       await syncTasksFromDoc(content);
     } finally {
@@ -160,21 +278,54 @@
     onTodosChanged();
   }
 
-  async function createNote() {
-    if (!newTitle.trim()) return;
-    const folder = newFolder.trim();
-    const note = await api.saveNote({
-      id: '', title: newTitle.trim(),
-      content: `# ${newTitle.trim()}\n\n`,
-      folder, pinned: false, tags: [],
-      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    });
-    notes.update((ns) => [note, ...ns]);
-    selectedNoteId.set(note.id);
-    newTitle = ''; newFolder = ''; showNewForm = false;
-    loadNote(note);
-    if (folder) expandedFolders = new Set([...expandedFolders, folder]);
-    selectedFolder = folder || null;
+  // Action to auto-focus an input when it mounts
+  function focusOnMount(el: HTMLElement) { el.focus(); }
+
+  function expandPath(path: string) {
+    if (!path) return;
+    const parts = path.split('/');
+    expandedFolders = new Set([...expandedFolders, ...parts.map((_, i) => parts.slice(0, i + 1).join('/'))]);
+  }
+
+  function startInlineCreate(type: 'note' | 'folder', parentPath: string) {
+    inlineCreate = { type, parentPath };
+    inlineCreateValue = '';
+    contextMenu = null;
+    showHeaderMenu = false;
+    // Auto-expand the parent so the inline input is visible
+    expandPath(parentPath);
+  }
+
+  function cancelInlineCreate() {
+    inlineCreate = null;
+  }
+
+  async function commitInlineCreate() {
+    if (!inlineCreate) return;
+    const { type, parentPath } = inlineCreate;
+    const name = inlineCreateValue.trim();
+    inlineCreate = null;
+    inlineCreateValue = '';
+    if (!name) return;
+
+    if (type === 'note') {
+      const note = await api.saveNote({
+        id: '', title: name, content: `# ${name}\n\n`,
+        folder: parentPath, pinned: false, tags: [],
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      });
+      notes.update(ns => [note, ...ns]);
+      // Remove from pending folders now that a real note exists there
+      if (parentPath) pendingFolders = pendingFolders.filter(f => f !== parentPath);
+      selectedNoteId.set(note.id);
+      loadNote(note);
+      selectedFolder = parentPath || null;
+    } else {
+      // Named a new folder — add as pending so it appears in the tree without requiring a note right away
+      const folderPath = parentPath ? `${parentPath}/${name}` : name;
+      pendingFolders = [...pendingFolders, folderPath];
+      expandPath(folderPath);
+    }
   }
 
   async function deleteNote(id: string) {
@@ -235,36 +386,46 @@
     const newFolder = renameFolderValue.trim();
     renamingFolder = null;
     if (newFolder === oldFolder) return;
-    const toRename = $notes.filter((n) => (n.folder ?? '') === oldFolder);
+    const toRename = $notes.filter(n => { const f = n.folder ?? ''; return f === oldFolder || f.startsWith(oldFolder + '/'); });
     for (const note of toRename) {
-      const updated = await api.saveNote({ ...note, folder: newFolder });
-      notes.update((ns) => ns.map((n) => (n.id === updated.id ? updated : n)));
-      if (currentNote?.id === updated.id) currentNote = { ...currentNote, folder: newFolder };
+      const oldF = note.folder ?? '';
+      const newF = oldF === oldFolder ? newFolder : newFolder + oldF.slice(oldFolder.length);
+      const updated = await api.saveNote({ ...note, folder: newF });
+      notes.update(ns => ns.map(n => n.id === updated.id ? updated : n));
+      if (currentNote?.id === updated.id) currentNote = { ...currentNote, folder: newF };
     }
-    expandedFolders = new Set([...expandedFolders].map((f) => (f === oldFolder ? newFolder : f)));
+    expandedFolders = new Set([...expandedFolders].map(f => {
+      if (f === oldFolder) return newFolder;
+      if (f.startsWith(oldFolder + '/')) return newFolder + f.slice(oldFolder.length);
+      return f;
+    }));
     if (selectedFolder === oldFolder) selectedFolder = newFolder;
+    else if (selectedFolder?.startsWith(oldFolder + '/')) selectedFolder = newFolder + selectedFolder.slice(oldFolder.length);
   }
 
   // ── Delete folder ──────────────────────────────────────────────────────────
 
   async function deleteFolderNotes(folder: string) {
     confirmDeleteFolder = null;
-    const toDelete = $notes.filter((n) => (n.folder ?? '') === folder);
+    const toDelete = $notes.filter(n => { const f = n.folder ?? ''; return f === folder || f.startsWith(folder + '/'); });
     for (const note of toDelete) await api.deleteNote(note.id);
-    notes.update((ns) => ns.filter((n) => (n.folder ?? '') !== folder));
-    if (toDelete.find((n) => n.id === $selectedNoteId)) { selectedNoteId.set(null); currentNote = null; }
-    if (selectedFolder === folder) selectedFolder = null;
+    notes.update(ns => ns.filter(n => { const f = n.folder ?? ''; return f !== folder && !f.startsWith(folder + '/'); }));
+    if (toDelete.find(n => n.id === $selectedNoteId)) { selectedNoteId.set(null); currentNote = null; }
+    if (selectedFolder === folder || selectedFolder?.startsWith(folder + '/')) selectedFolder = null;
+    // Remove any pending sub-paths too
+    pendingFolders = pendingFolders.filter(f => f !== folder && !f.startsWith(folder + '/'));
   }
 
   async function moveFolderToRoot(folder: string) {
     confirmDeleteFolder = null;
-    const toMove = $notes.filter((n) => (n.folder ?? '') === folder);
+    const toMove = $notes.filter(n => { const f = n.folder ?? ''; return f === folder || f.startsWith(folder + '/'); });
     for (const note of toMove) {
       const updated = await api.saveNote({ ...note, folder: '' });
-      notes.update((ns) => ns.map((n) => (n.id === updated.id ? updated : n)));
+      notes.update(ns => ns.map(n => n.id === updated.id ? updated : n));
       if (currentNote?.id === updated.id) currentNote = { ...currentNote, folder: '' };
     }
-    if (selectedFolder === folder) selectedFolder = null;
+    if (selectedFolder === folder || selectedFolder?.startsWith(folder + '/')) selectedFolder = null;
+    pendingFolders = pendingFolders.filter(f => f !== folder && !f.startsWith(folder + '/'));
   }
 
   // ── Drag and drop ──────────────────────────────────────────────────────────
@@ -317,7 +478,6 @@
       defaultValue: '',
       features: {
         [CrepeFeature.AI]: false,
-        [CrepeFeature.ImageBlock]: false,
         [CrepeFeature.TopBar]: false,
         [CrepeFeature.Latex]: false,
       },
@@ -325,11 +485,16 @@
     c.on((api) => {
       api.markdownUpdated((_, markdown) => {
         currentMarkdown = stripAssetUrls(markdown, currentNote?.folder ?? '');
-        if (currentNote) scheduleSave();
+        // Skip autosave when the update was triggered by loadNote's replaceAll call.
+        if (currentNote && !loadingNote) scheduleSave();
       });
     });
+    const closeMenus = () => { contextMenu = null; showHeaderMenu = false; };
+    document.addEventListener('click', closeMenus);
+
     void c.create().then(() => {
       crepe = c;
+      editorEl.addEventListener('keydown', handleHeadingShortcut);
       const pm = editorEl.querySelector('.ProseMirror');
       if (pm instanceof HTMLElement) pm.style.paddingTop = '0';
       if (currentNote && currentMarkdown) {
@@ -343,6 +508,8 @@
   });
 
   onDestroy(() => {
+    document.removeEventListener('click', () => { contextMenu = null; showHeaderMenu = false; });
+    editorEl?.removeEventListener('keydown', handleHeadingShortcut);
     if (saveTimer) { clearTimeout(saveTimer); void saveCurrentNote(); }
     void crepe?.destroy();
   });
@@ -353,32 +520,30 @@
   <aside class="note-list">
     <div class="note-list-header">
       <span class="section-title">Documents</span>
-      <button class="icon-btn" onclick={() => (showNewForm = !showNewForm)} title="New document">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      </button>
+      <div class="header-menu-wrap">
+        <button class="icon-btn" onclick={(e) => { e.stopPropagation(); showHeaderMenu = !showHeaderMenu; }} title="New…">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        {#if showHeaderMenu}
+          <div class="ctx-menu" onclick={(e) => e.stopPropagation()}>
+            <button class="ctx-item" onclick={() => startInlineCreate('note', '')}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              New document
+            </button>
+            <button class="ctx-item" onclick={() => startInlineCreate('folder', '')}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              New folder
+            </button>
+          </div>
+        {/if}
+      </div>
     </div>
 
-    {#if showNewForm}
-      <div class="new-note-form">
-        <input
-          class="note-input" placeholder="Document title…" bind:value={newTitle}
-          onkeydown={(e) => e.key === 'Enter' && createNote()}
-        />
-        <input class="note-input" placeholder="Folder (optional)" bind:value={newFolder} list="folder-list" />
-        <datalist id="folder-list">
-          {#each allFolders.filter(Boolean) as f}<option value={f}>{f}</option>{/each}
-        </datalist>
-        <div class="form-row">
-          <button class="btn-create" onclick={createNote}>Create</button>
-          <button class="btn-cancel" onclick={() => (showNewForm = false)}>✕</button>
-        </div>
-      </div>
-    {/if}
-
-    <!-- "All" shortcut — also a drop target for root -->
+    <!-- "All" shortcut — also a drop target for root; right-click for root-level creation -->
     <button
       class="folder-all {selectedFolder === null ? 'active' : ''} {dragTarget === '' ? 'drag-over' : ''}"
       onclick={() => (selectedFolder = null)}
+      oncontextmenu={(e) => { e.preventDefault(); contextMenu = { x: e.clientX, y: e.clientY, folderPath: '' }; }}
       ondragover={(e) => onDragOver(e, '')}
       ondragleave={(e) => onDragLeave(e, '')}
       ondrop={(e) => onDrop(e, '')}
@@ -390,52 +555,84 @@
 
     <!-- Folder tree -->
     <div class="folder-tree">
-      {#each allFolders as folder}
-        {@const folderNotes = $notes.filter((n) => (n.folder ?? '') === folder)}
-        {@const isExpanded = expandedFolders.has(folder)}
-        {@const isSelected = selectedFolder === folder}
 
-        <div
-          class="folder-row {dragTarget === folder ? 'drag-over' : ''}"
-          role="listitem"
-          ondragover={(e) => onDragOver(e, folder)}
-          ondragleave={(e) => onDragLeave(e, folder)}
-          ondrop={(e) => onDrop(e, folder)}
+      {#snippet noteItem(note: import('$lib/types').Note)}
+        <li
+          class="note-item {$selectedNoteId === note.id ? 'active' : ''} {draggedNoteId === note.id ? 'dragging' : ''}"
+          draggable="true"
+          ondragstart={(e) => onDragStart(e, note.id)}
+          ondragend={() => { draggedNoteId = null; }}
         >
-          {#if renamingFolder === folder}
-            <input
-              class="note-input rename-inline"
-              bind:value={renameFolderValue}
-              onkeydown={(e) => {
-                if (e.key === 'Enter') commitRenameFolder(folder);
-                if (e.key === 'Escape') renamingFolder = null;
-              }}
-              onblur={() => commitRenameFolder(folder)}
-            />
+          {#if renamingNoteId === note.id}
+            <input class="note-input rename-inline" bind:value={renameNoteValue}
+              onkeydown={(e) => { if (e.key === 'Enter') commitRenameNote(note); if (e.key === 'Escape') renamingNoteId = null; }}
+              onblur={() => commitRenameNote(note)} />
           {:else}
-            <button
-              class="folder-btn {isSelected ? 'active' : ''}"
-              onclick={() => { selectedFolder = folder; toggleFolder(folder); confirmDeleteFolder = null; }}
-            >
-              <span class="folder-chevron">{isExpanded ? '▾' : '▸'}</span>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="{isSelected ? '#6366f1' : 'none'}" stroke="{isSelected ? '#6366f1' : '#9ca3af'}" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-              <span class="folder-name">{folder || 'Uncategorized'}</span>
-              <span class="count">{folderNotes.length}</span>
+            <button class="note-item-select" onclick={() => { selectedNoteId.set(note.id); loadNote(note); }}>
+              <div class="note-item-title">{#if note.pinned}<span class="pin">📌</span>{/if}{note.title || 'Untitled'}</div>
+              <div class="note-item-meta">{fmtDate(note.updated_at)}</div>
             </button>
-            <div class="folder-actions">
-              <button class="micro-btn" onclick={() => startRenameFolder(folder)} title="Rename folder">
+            <div class="note-item-actions">
+              <button class="micro-btn" onclick={() => startRenameNote(note)} title="Rename">
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               </button>
-              {#if confirmDeleteFolder === folder}
-                <button class="micro-btn warning" onclick={() => moveFolderToRoot(folder)} title="Move notes to root">
+              <button class="micro-btn" onclick={() => togglePin(note)} title="{note.pinned ? 'Unpin' : 'Pin'}">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="{note.pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/></svg>
+              </button>
+              <button class="micro-btn danger" onclick={() => deleteNote(note.id)} title="Delete">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+              </button>
+            </div>
+          {/if}
+        </li>
+      {/snippet}
+
+      {#snippet folderNode(node: FolderTreeNode, depth: number)}
+        {@const directNotes = $notes.filter(n => (n.folder ?? '') === node.fullPath)}
+        {@const isExpanded = expandedFolders.has(node.fullPath)}
+        {@const isSelected = selectedFolder === node.fullPath}
+
+        <div
+          class="folder-row {dragTarget === node.fullPath ? 'drag-over' : ''}"
+          role="listitem"
+          style="padding-left: {depth * 14}px"
+          oncontextmenu={(e) => { e.preventDefault(); e.stopPropagation(); contextMenu = { x: e.clientX, y: e.clientY, folderPath: node.fullPath }; }}
+          ondragover={(e) => onDragOver(e, node.fullPath)}
+          ondragleave={(e) => onDragLeave(e, node.fullPath)}
+          ondrop={(e) => onDrop(e, node.fullPath)}
+        >
+          {#if renamingFolder === node.fullPath}
+            <input use:focusOnMount class="note-input rename-inline" bind:value={renameFolderValue}
+              onkeydown={(e) => { if (e.key === 'Enter') commitRenameFolder(node.fullPath); if (e.key === 'Escape') renamingFolder = null; }}
+              onblur={() => commitRenameFolder(node.fullPath)} />
+          {:else}
+            <button class="folder-btn {isSelected ? 'active' : ''}"
+              onclick={() => { selectedFolder = node.fullPath; toggleFolder(node.fullPath); confirmDeleteFolder = null; }}>
+              <span class="folder-chevron">{isExpanded ? '▾' : '▸'}</span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="{isSelected ? '#6366f1' : 'none'}" stroke="{isSelected ? '#6366f1' : '#9ca3af'}" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span class="folder-name">{node.name}</span>
+              <span class="count">{subtreeNoteCount(node.fullPath)}</span>
+            </button>
+            <div class="folder-actions">
+              <button class="micro-btn" title="New document" onclick={() => startInlineCreate('note', node.fullPath)}>
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+              </button>
+              <button class="micro-btn" title="New subfolder" onclick={() => startInlineCreate('folder', node.fullPath)}>
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/></svg>
+              </button>
+              <button class="micro-btn" onclick={() => startRenameFolder(node.fullPath)} title="Rename">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              {#if confirmDeleteFolder === node.fullPath}
+                <button class="micro-btn warning" onclick={() => moveFolderToRoot(node.fullPath)} title="Move to root">
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
                 </button>
-                <button class="micro-btn danger" onclick={() => deleteFolderNotes(folder)} title="Delete all notes">
+                <button class="micro-btn danger" onclick={() => deleteFolderNotes(node.fullPath)} title="Delete all">
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
                 </button>
-                <button class="micro-btn" onclick={() => (confirmDeleteFolder = null)} title="Cancel">✕</button>
+                <button class="micro-btn" onclick={() => (confirmDeleteFolder = null)}>✕</button>
               {:else}
-                <button class="micro-btn danger" onclick={() => (confirmDeleteFolder = folder)} title="Delete folder">
+                <button class="micro-btn danger" onclick={() => (confirmDeleteFolder = node.fullPath)} title="Delete">
                   <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
                 </button>
               {/if}
@@ -443,56 +640,116 @@
           {/if}
         </div>
 
-        {#if confirmDeleteFolder === folder}
-          <div class="folder-delete-hint">
-            Move to root or delete all?
-          </div>
+        {#if confirmDeleteFolder === node.fullPath}
+          <div class="folder-delete-hint" style="padding-left: {depth * 14 + 22}px">Move to root or delete all?</div>
         {/if}
 
         {#if isExpanded}
-          <ul class="note-items indented">
-            {#each folderNotes as note (note.id)}
-              <li
-                class="note-item {$selectedNoteId === note.id ? 'active' : ''} {draggedNoteId === note.id ? 'dragging' : ''}"
-                draggable="true"
-                ondragstart={(e) => onDragStart(e, note.id)}
-                ondragend={() => { draggedNoteId = null; }}
-              >
-                {#if renamingNoteId === note.id}
-                  <input
-                    class="note-input rename-inline"
-                    bind:value={renameNoteValue}
-                    onkeydown={(e) => {
-                      if (e.key === 'Enter') commitRenameNote(note);
-                      if (e.key === 'Escape') renamingNoteId = null;
-                    }}
-                    onblur={() => commitRenameNote(note)}
-                  />
-                {:else}
-                  <button class="note-item-select" onclick={() => { selectedNoteId.set(note.id); loadNote(note); }}>
-                    <div class="note-item-title">
-                      {#if note.pinned}<span class="pin">📌</span>{/if}
-                      {note.title || 'Untitled'}
-                    </div>
-                    <div class="note-item-meta">{fmtDate(note.updated_at)}</div>
-                  </button>
-                  <div class="note-item-actions">
-                    <button class="micro-btn" onclick={() => startRenameNote(note)} title="Rename">
-                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                    </button>
-                    <button class="micro-btn" onclick={() => togglePin(note)} title="{note.pinned ? 'Unpin' : 'Pin'}">
-                      <svg width="9" height="9" viewBox="0 0 24 24" fill="{note.pinned ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17z"/></svg>
-                    </button>
-                    <button class="micro-btn danger" onclick={() => deleteNote(note.id)} title="Delete">
-                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
-                    </button>
-                  </div>
-                {/if}
+          <!-- Inline subfolder creation (appears below parent, indented as child) -->
+          {#if inlineCreate?.type === 'folder' && inlineCreate.parentPath === node.fullPath}
+            <div class="folder-row inline-create" style="padding-left: {(depth + 1) * 14}px">
+              <span class="folder-chevron">▸</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <input use:focusOnMount class="inline-name-input" bind:value={inlineCreateValue}
+                placeholder="folder name"
+                onkeydown={(e) => { if (e.key === 'Enter') commitInlineCreate(); if (e.key === 'Escape') cancelInlineCreate(); }}
+                onblur={() => { if (inlineCreate?.type === 'folder' && inlineCreate.parentPath === node.fullPath) cancelInlineCreate(); }} />
+            </div>
+          {/if}
+
+          <!-- Inline note creation in this folder -->
+          {#if inlineCreate?.type === 'note' && inlineCreate.parentPath === node.fullPath}
+            <ul class="note-items" style="padding-left: {(depth + 1) * 14}px">
+              <li class="note-item inline-create">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" style="flex-shrink:0;margin-left:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <input use:focusOnMount class="inline-name-input" bind:value={inlineCreateValue}
+                  placeholder="document name"
+                  onkeydown={(e) => { if (e.key === 'Enter') commitInlineCreate(); if (e.key === 'Escape') cancelInlineCreate(); }}
+                  onblur={() => { if (inlineCreate?.type === 'note' && inlineCreate.parentPath === node.fullPath) cancelInlineCreate(); }} />
               </li>
-            {/each}
+            </ul>
+          {/if}
+
+          {#if directNotes.length}
+            <ul class="note-items" style="padding-left: {(depth + 1) * 14}px">
+              {#each directNotes as note (note.id)}{@render noteItem(note)}{/each}
+            </ul>
+          {/if}
+          {#each node.children as child}{@render folderNode(child, depth + 1)}{/each}
+        {/if}
+      {/snippet}
+
+      {#each folderTree as node}{@render folderNode(node, 0)}{/each}
+
+      <!-- Root-level inline folder creation (from header "+" → New folder) -->
+      {#if inlineCreate?.type === 'folder' && inlineCreate.parentPath === ''}
+        <div class="folder-row inline-create">
+          <span class="folder-chevron">▸</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <input use:focusOnMount class="inline-name-input" bind:value={inlineCreateValue}
+            placeholder="folder name"
+            onkeydown={(e) => { if (e.key === 'Enter') commitInlineCreate(); if (e.key === 'Escape') cancelInlineCreate(); }}
+            onblur={() => { if (inlineCreate?.type === 'folder' && inlineCreate.parentPath === '') cancelInlineCreate(); }} />
+        </div>
+      {/if}
+
+      <!-- Root-level inline note creation (from header "+" → New document) -->
+      {#if inlineCreate?.type === 'note' && inlineCreate.parentPath === ''}
+        <ul class="note-items" style="padding-left: 14px">
+          <li class="note-item inline-create">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" style="flex-shrink:0;margin-left:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <input use:focusOnMount class="inline-name-input" bind:value={inlineCreateValue}
+              placeholder="document name"
+              onkeydown={(e) => { if (e.key === 'Enter') commitInlineCreate(); if (e.key === 'Escape') cancelInlineCreate(); }}
+              onblur={() => { if (inlineCreate?.type === 'note' && inlineCreate.parentPath === '') cancelInlineCreate(); }} />
+          </li>
+        </ul>
+      {/if}
+
+      <!-- Uncategorized (root) notes -->
+      {#if $notes.some(n => !(n.folder ?? ''))}
+        {@const rootNotes = $notes.filter(n => !(n.folder ?? ''))}
+        {@const isExpanded = expandedFolders.has('')}
+        {@const isSelected = selectedFolder === ''}
+        <div class="folder-row {dragTarget === '' ? 'drag-over' : ''}" role="listitem"
+          ondragover={(e) => onDragOver(e, '')} ondragleave={(e) => onDragLeave(e, '')} ondrop={(e) => onDrop(e, '')}>
+          {#if renamingFolder === ''}
+            <input class="note-input rename-inline" bind:value={renameFolderValue}
+              onkeydown={(e) => { if (e.key === 'Enter') commitRenameFolder(''); if (e.key === 'Escape') renamingFolder = null; }}
+              onblur={() => commitRenameFolder('')} />
+          {:else}
+            <button class="folder-btn {isSelected ? 'active' : ''}"
+              onclick={() => { selectedFolder = ''; toggleFolder(''); confirmDeleteFolder = null; }}>
+              <span class="folder-chevron">{isExpanded ? '▾' : '▸'}</span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span class="folder-name">Uncategorized</span>
+              <span class="count">{rootNotes.length}</span>
+            </button>
+            <div class="folder-actions">
+              <button class="micro-btn" onclick={() => startRenameFolder('')} title="Rename">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              {#if confirmDeleteFolder === ''}
+                <button class="micro-btn danger" onclick={() => deleteFolderNotes('')} title="Delete all">
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                </button>
+                <button class="micro-btn" onclick={() => (confirmDeleteFolder = null)} title="Cancel">✕</button>
+              {:else}
+                <button class="micro-btn danger" onclick={() => (confirmDeleteFolder = '')} title="Delete">
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                </button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+        {#if confirmDeleteFolder === ''}<div class="folder-delete-hint">Delete all uncategorized notes?</div>{/if}
+        {#if isExpanded}
+          <ul class="note-items indented">
+            {#each rootNotes as note (note.id)}{@render noteItem(note)}{/each}
           </ul>
         {/if}
-      {/each}
+      {/if}
+
     </div>
 
     {#if $notes.length === 0}
@@ -517,29 +774,35 @@
             }}
             placeholder="Untitled"
           />
-          <select
-            class="folder-select"
-            value={currentNote.folder ?? ''}
-            onchange={(e) => currentNote && moveToFolder(currentNote, (e.target as HTMLSelectElement).value)}
-            title="Move to folder"
-          >
-            <option value="">No folder</option>
-            {#each allFolders.filter(Boolean) as f}<option value={f}>{f}</option>{/each}
-          </select>
         </div>
         <div class="toolbar-right">
           {#if saving}<span class="saving-indicator">saving…</span>{/if}
+          <button
+            class="icon-btn {rawMode ? 'active' : ''}"
+            onclick={toggleRaw}
+            title={rawMode ? 'Switch to WYSIWYG' : 'Switch to Raw'}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          </button>
         </div>
       </div>
     {/if}
 
-    <div class="milkdown-wrapper" class:hidden={!currentNote} bind:this={editorEl}></div>
+    <div class="milkdown-wrapper" class:hidden={!currentNote || rawMode} bind:this={editorEl}></div>
+
+    <textarea
+      class="raw-editor"
+      class:hidden={!currentNote || !rawMode}
+      bind:value={currentMarkdown}
+      oninput={() => { if (currentNote) scheduleSave(); }}
+      spellcheck={false}
+    ></textarea>
 
     {#if !currentNote}
       <div class="no-doc">
         <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#2d2d3d" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         <p>Select a document or create a new one</p>
-        <button class="btn-primary" onclick={() => (showNewForm = true)}>New document</button>
+        <button class="btn-primary" onclick={() => startInlineCreate('note', '')}>New document</button>
       </div>
     {/if}
 
@@ -549,6 +812,35 @@
       </div>
     {/if}
   </div>
+
+  <!-- Right-click context menu -->
+  {#if contextMenu}
+    <div
+      class="ctx-menu"
+      style="position:fixed;left:{contextMenu.x}px;top:{contextMenu.y}px;z-index:200"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <button class="ctx-item" onclick={() => startInlineCreate('note', contextMenu!.folderPath)}>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        New document
+      </button>
+      <button class="ctx-item" onclick={() => startInlineCreate('folder', contextMenu!.folderPath)}>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        {contextMenu!.folderPath ? 'New subfolder' : 'New folder'}
+      </button>
+      {#if contextMenu!.folderPath}
+        <div class="ctx-sep"></div>
+        <button class="ctx-item" onclick={() => { startRenameFolder(contextMenu!.folderPath); contextMenu = null; }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          Rename
+        </button>
+        <button class="ctx-item danger" onclick={() => { confirmDeleteFolder = contextMenu!.folderPath; contextMenu = null; }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          Delete
+        </button>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -632,7 +924,7 @@
     padding: 1px 5px; border-radius: 8px; flex-shrink: 0;
   }
 
-  .note-items { list-style: none; }
+  .note-items { list-style: none; padding: 0; }
   .note-items.indented { padding-left: 14px; }
   .note-item {
     display: flex; align-items: center; border-radius: 7px;
@@ -686,14 +978,8 @@
   }
   .title-input::placeholder { color: #475569; }
 
-  .folder-select {
-    background: #1e1e2e; border: 1px solid #2d2d3d; border-radius: 6px;
-    color: #9ca3af; padding: 3px 8px; font-size: 0.75rem; outline: none; cursor: pointer;
-    max-width: 120px;
-  }
-  .folder-select:focus { border-color: #6366f1; }
-
   .saving-indicator { font-size: 0.72rem; color: #64748b; }
+  .icon-btn.active { background: #3730a3; color: #a5b4fc; }
 
   /* ── Milkdown wrapper ── */
   .milkdown-wrapper { flex: 1; overflow-y: auto; min-height: 0; }
@@ -749,6 +1035,49 @@
     border-top: 1px solid #1a1a28; flex-shrink: 0;
   }
   .editor-hint code { background: #1e1e2e; padding: 1px 4px; border-radius: 3px; color: #6366f1; }
+
+  /* ── Raw editor ── */
+  .raw-editor {
+    flex: 1; min-height: 0; padding: 16px 32px; margin: 0; border: none; outline: none; resize: none;
+    background: #0a0a10; color: #cbd5e1;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+    font-size: 0.875rem; line-height: 1.7; tab-size: 2;
+  }
+  .raw-editor.hidden { display: none; }
+
+  /* ── Header menu wrap ── */
+  .header-menu-wrap { position: relative; }
+
+  /* ── Context / dropdown menus ── */
+  .ctx-menu {
+    background: #1a1a28; border: 1px solid #2d2d3d; border-radius: 8px;
+    padding: 4px; min-width: 160px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  /* The header dropdown is relative, the right-click menu is fixed (set inline) */
+  .header-menu-wrap .ctx-menu {
+    position: absolute; right: 0; top: calc(100% + 4px); z-index: 100;
+  }
+  .ctx-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; border-radius: 5px; border: none;
+    background: transparent; color: #cbd5e1;
+    font-size: 0.8rem; cursor: pointer; text-align: left; width: 100%;
+    transition: background 0.1s, color 0.1s;
+  }
+  .ctx-item:hover { background: #2d2d3d; color: #f1f5f9; }
+  .ctx-item.danger { color: #f87171; }
+  .ctx-item.danger:hover { background: #2a0e0e; }
+  .ctx-sep { height: 1px; background: #2d2d3d; margin: 3px 0; }
+
+  /* ── Inline creation inputs ── */
+  .inline-name-input {
+    flex: 1; background: #0f0f14; border: 1px solid #6366f1; border-radius: 5px;
+    color: #e2e8f0; padding: 3px 7px; font-size: 0.8rem; outline: none;
+    min-width: 0;
+  }
+  .note-item.inline-create { cursor: default; padding: 4px 6px; gap: 6px; }
+  .folder-row.inline-create { padding-top: 3px; padding-bottom: 3px; gap: 6px; }
 
   @media (max-width: 600px) {
     .note-list { width: 100%; min-width: unset; max-height: 180px; border-right: none; border-bottom: 1px solid #1e1e2e; }

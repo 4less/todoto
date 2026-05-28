@@ -1090,7 +1090,7 @@
     outline: none;
     overflow-wrap: break-word;
     word-break: break-word;
-    caret-color: #818cf8;
+    caret-color: #ffffff !important;
   }
   :global(.notes-editor-wrap .milkdown) { position: relative; }
 
@@ -1105,10 +1105,31 @@
     margin: 6px 0;
     overflow-x: auto;
   }
-  /* Single-line code blocks get tighter spacing */
-  :global(.notes-editor-wrap .ProseMirror pre.single-line) {
+  /* Single-line code blocks — decoration class lands on div.milkdown-code-block */
+  :global(.notes-editor-wrap .ProseMirror .milkdown-code-block.single-line pre) {
     padding: 5px 12px;
+  }
+  :global(.notes-editor-wrap .ProseMirror .milkdown-code-block.single-line) {
     margin: 3px 0;
+  }
+  /* List item with a code block: bullet stays on the same line */
+  :global(.notes-editor-wrap .ProseMirror li:has(> .milkdown-code-block)) {
+    display: flex;
+    align-items: center;
+    list-style: none;
+    gap: 6px;
+  }
+  :global(.notes-editor-wrap .ProseMirror li:has(> .milkdown-code-block)::before) {
+    content: '•';
+    flex-shrink: 0;
+    font-size: 1.1em;
+    line-height: 1;
+    color: #64748b;
+  }
+  :global(.notes-editor-wrap .ProseMirror li:has(> .milkdown-code-block) > .milkdown-code-block) {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
   }
   :global(.notes-editor-wrap .ProseMirror pre code) {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;

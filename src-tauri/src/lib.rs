@@ -600,14 +600,26 @@ async fn gh_put_file(
         "https://api.github.com/repos/{owner}/{repo}/contents/{}",
         encode_url_path(path)
     );
-    let body = GhPutBody {
-        message: &format!("sync: {}", Utc::now().format("%Y-%m-%d %H:%M UTC")),
-        content: B64.encode(content.as_bytes()),
-        sha: current_sha,
-    };
+    let encoded = B64.encode(content.as_bytes());
+    let message = format!("sync: {}", Utc::now().format("%Y-%m-%d %H:%M UTC"));
+    let body = GhPutBody { message: &message, content: encoded.clone(), sha: current_sha };
     let resp = client.put(&url).json(&body).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status = resp.status();
+    // 422 with no SHA means the file already exists on GitHub but wasn't in our tree
+    // (e.g. git/trees response was truncated). Fetch the real SHA and retry once.
+    if status.as_u16() == 422 && current_sha.is_none() {
+        let (_, file_sha) = gh_get_file(client, owner, repo, path).await?;
+        let body2 = GhPutBody { message: &message, content: encoded, sha: Some(file_sha.as_str()) };
+        let resp2 = client.put(&url).json(&body2).send().await.map_err(|e| e.to_string())?;
+        if !resp2.status().is_success() {
+            let status2 = resp2.status();
+            let text = resp2.text().await.unwrap_or_default();
+            return Err(format!("put {path}: HTTP {status2}: {text}"));
+        }
+        let put_resp: GhPutResponse = resp2.json().await.map_err(|e| e.to_string())?;
+        return Ok(put_resp.content.sha);
+    }
+    if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("put {path}: HTTP {status}: {text}"));
     }
@@ -644,14 +656,24 @@ async fn gh_put_binary_file(
         "https://api.github.com/repos/{owner}/{repo}/contents/{}",
         encode_url_path(path)
     );
-    let body = GhPutBody {
-        message: &format!("sync: {}", Utc::now().format("%Y-%m-%d %H:%M UTC")),
-        content: B64.encode(bytes),
-        sha: current_sha,
-    };
+    let encoded = B64.encode(bytes);
+    let message = format!("sync: {}", Utc::now().format("%Y-%m-%d %H:%M UTC"));
+    let body = GhPutBody { message: &message, content: encoded.clone(), sha: current_sha };
     let resp = client.put(&url).json(&body).send().await.map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status = resp.status();
+    if status.as_u16() == 422 && current_sha.is_none() {
+        let (_, file_sha) = gh_get_binary_file(client, owner, repo, path).await?;
+        let body2 = GhPutBody { message: &message, content: encoded, sha: Some(file_sha.as_str()) };
+        let resp2 = client.put(&url).json(&body2).send().await.map_err(|e| e.to_string())?;
+        if !resp2.status().is_success() {
+            let status2 = resp2.status();
+            let text = resp2.text().await.unwrap_or_default();
+            return Err(format!("put {path}: HTTP {status2}: {text}"));
+        }
+        let put_resp: GhPutResponse = resp2.json().await.map_err(|e| e.to_string())?;
+        return Ok(put_resp.content.sha);
+    }
+    if !status.is_success() {
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("put {path}: HTTP {status}: {text}"));
     }

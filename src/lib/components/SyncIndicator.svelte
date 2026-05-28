@@ -30,8 +30,9 @@
 </button>
 
 {#if $syncState.lastResult && !$syncState.lastResult.success}
-  <div class="sync-error" title={$syncState.lastResult.message}>
-    Sync failed
+  <div class="sync-error">
+    <span class="sync-error-label">Sync failed:</span>
+    {$syncState.lastResult.message}
   </div>
 {/if}
 
@@ -51,6 +52,9 @@
 
   .sync-error {
     font-size: 0.72rem; color: #f87171;
-    padding: 2px 12px;
+    padding: 2px 12px 6px;
+    line-height: 1.5;
+    word-break: break-word;
   }
+  .sync-error-label { font-weight: 600; margin-right: 4px; }
 </style>

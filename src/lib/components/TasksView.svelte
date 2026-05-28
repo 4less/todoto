@@ -58,6 +58,7 @@
   // ── Notes state ───────────────────────────────────────────────────────────
   let notesOpenId: string | null = $state(null);
   let notesContent: string = $state('');
+  let notesRawMode = $state(false);
   let notesSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let notesEditorInstance: Crepe | null = null;
 
@@ -384,6 +385,7 @@
         scheduleNotesSave();
       });
     });
+    el.addEventListener('keydown', handleNotesHeadingShortcut);
     void c.create().then(() => {
       if (!destroyed) {
         instance = c;
@@ -400,6 +402,7 @@
     return {
       destroy() {
         destroyed = true;
+        el.removeEventListener('keydown', handleNotesHeadingShortcut);
         if (notesEditorInstance === instance) notesEditorInstance = null;
         void instance?.destroy();
         instance = null;
@@ -407,7 +410,46 @@
     };
   }
 
+  function toggleNotesRaw() {
+    if (!notesRawMode) {
+      notesRawMode = true;
+    } else {
+      notesRawMode = false;
+      notesEditorInstance?.editor.action(replaceAll(notesContent));
+    }
+  }
+
+  function handleNotesHeadingShortcut(e: KeyboardEvent) {
+    if (!e.ctrlKey || notesRawMode || !notesEditorInstance) return;
+    const promote = e.key === '=' || e.key === '+';
+    const demote = e.key === '-';
+    if (!promote && !demote) return;
+    e.preventDefault();
+    notesEditorInstance.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const { state } = view;
+      const { from, to } = state.selection;
+      const { schema } = state;
+      const parent = state.selection.$from.parent;
+      let level = 0;
+      if (parent.type === schema.nodes.heading) level = parent.attrs.level as number;
+      else if (parent.type !== schema.nodes.paragraph) return;
+      let tr;
+      if (promote) {
+        if (level === 1) return;
+        tr = state.tr.setBlockType(from, to, schema.nodes.heading, { level: level === 0 ? 6 : level - 1 });
+      } else {
+        if (level === 0) return;
+        tr = level === 6
+          ? state.tr.setBlockType(from, to, schema.nodes.paragraph)
+          : state.tr.setBlockType(from, to, schema.nodes.heading, { level: level + 1 });
+      }
+      view.dispatch(tr);
+    });
+  }
+
   function openNotes(todo: Todo) {
+    notesRawMode = false;
     if (notesOpenId && notesOpenId !== todo.id) {
       if (notesSaveTimer) { clearTimeout(notesSaveTimer); notesSaveTimer = null; }
       const prev = $todos.find((t) => t.id === notesOpenId);
@@ -520,7 +562,7 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<div class="tasks">
+<div class="tasks" class:focus-mode={focusMode}>
   <header class="page-header">
     <div>
       <h1>Tasks</h1>
@@ -706,12 +748,23 @@
                 <button class="notes-close-btn" onclick={clearNotesContent} title="Clear notes">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
                 </button>
+                <button class="notes-close-btn {notesRawMode ? 'raw-active' : ''}" onclick={toggleNotesRaw} title="{notesRawMode ? 'Switch to WYSIWYG' : 'Switch to raw markdown'}">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                </button>
                 <button class="notes-close-btn" onclick={closeNotes} title="Close notes">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
               </div>
             </div>
-            <div class="notes-editor-wrap" use:initNotesEditor></div>
+            <div class="notes-editor-wrap" style:display={notesRawMode ? 'none' : ''} use:initNotesEditor></div>
+            {#if notesRawMode}
+              <textarea
+                class="notes-raw-editor"
+                bind:value={notesContent}
+                oninput={scheduleNotesSave}
+                spellcheck={false}
+              ></textarea>
+            {/if}
           </div>
         {/if}
   {/snippet}
@@ -987,6 +1040,41 @@
     padding: 0; overflow-y: auto;
   }
 
+  /* Focus mode: notes panel fills all remaining space, full bleed */
+  .focus-mode {
+    padding-left: 0;
+    padding-right: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+  }
+  .focus-mode .focus-view {
+    overflow: hidden;
+  }
+  .focus-mode .notes-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    border-radius: 0;
+  }
+  .focus-mode .notes-editor-wrap {
+    flex: 1;
+    min-height: 0;
+  }
+  :global(.focus-mode .notes-editor-wrap .milkdown) {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  :global(.focus-mode .notes-editor-wrap .ProseMirror) {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding-bottom: 40px !important;
+  }
+
   /* Selection bar */
   .selection-bar {
     position: sticky; bottom: 0;
@@ -1054,7 +1142,6 @@
     border: 1px solid #6366f1;
     border-top: none;
     border-radius: 0 0 10px 10px;
-    overflow: hidden;
   }
 
   .notes-panel-header {
@@ -1079,6 +1166,26 @@
   }
   .notes-close-btn:hover { border-color: #3a1414; color: #f87171; background: #2a0e0e; }
   .notes-clear-btn:hover { border-color: #3a1414; color: #f87171; background: #2a0e0e; }
+  .notes-close-btn.raw-active { border-color: #6366f1; color: #818cf8; background: #1e1e3a; }
+  .notes-close-btn.raw-active:hover { border-color: #818cf8; color: #a5b4fc; background: #2a2050; }
+
+  /* Notes raw markdown textarea */
+  .notes-raw-editor {
+    display: block;
+    width: 100%;
+    min-height: 180px;
+    background: transparent;
+    border: none;
+    color: #e2e8f0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.82rem;
+    line-height: 1.7;
+    padding: 12px 16px;
+    resize: vertical;
+    outline: none;
+    caret-color: #ffffff !important;
+    box-sizing: border-box;
+  }
 
   /* Notes Milkdown editor */
   .notes-editor-wrap { min-height: 140px; }
@@ -1100,17 +1207,21 @@
     background: #0d0d14;
     border: 1px solid #2d2d3d;
     border-left: 3px solid #6366f1;
-    border-radius: 8px;
-    padding: 14px 16px;
-    margin: 6px 0;
+    border-radius: 6px;
+    padding: 8px 14px;
+    margin: 3px 0;
     overflow-x: auto;
+  }
+  /* Consecutive code blocks — close the gap so they feel like one region */
+  :global(.notes-editor-wrap .ProseMirror .milkdown-code-block + .milkdown-code-block) {
+    margin-top: 1px;
   }
   /* Single-line code blocks — decoration class lands on div.milkdown-code-block */
   :global(.notes-editor-wrap .ProseMirror .milkdown-code-block.single-line pre) {
-    padding: 5px 12px;
+    padding: 4px 10px;
   }
   :global(.notes-editor-wrap .ProseMirror .milkdown-code-block.single-line) {
-    margin: 3px 0;
+    margin: 2px 0;
   }
   /* List item with a code block: bullet stays on the same line */
   :global(.notes-editor-wrap .ProseMirror li:has(> .milkdown-code-block)) {

@@ -8,7 +8,10 @@
   import '@milkdown/crepe/theme/common/style.css';
   import '@milkdown/crepe/theme/nord-dark.css';
   import { replaceAll } from '@milkdown/utils';
-  import { editorViewCtx } from '@milkdown/core';
+  import { editorViewCtx, commandsCtx } from '@milkdown/core';
+  import { setBlockTypeCommand, codeBlockSchema, inlineCodeSchema } from '@milkdown/kit/preset/commonmark';
+  import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
+  import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
   import { convertFileSrc } from '@tauri-apps/api/core';
   import { settings } from '$lib/stores';
 
@@ -466,6 +469,81 @@
     return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
 
+  function patchToolbarCodeButton(editorInstance: Crepe, el: HTMLElement) {
+    const toolbar = el.querySelector('.toolbar');
+    if (!toolbar) return;
+    toolbar.addEventListener('pointerdown', (e) => {
+      const btn = (e.target as Element).closest('.toolbar-item');
+      if (!btn || !btn.innerHTML.includes('9.4 16.6')) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      editorInstance.editor.action((ctx) => {
+        const commands = ctx.get(commandsCtx);
+        commands.call(setBlockTypeCommand.key, { nodeType: codeBlockSchema.type(ctx) });
+      });
+    }, true);
+  }
+
+  const docsNoInlineCodeKey = new PluginKey('docs-no-inline-code');
+
+  function installCodeBlockPlugin(milkCtx: any) {
+    const view = milkCtx.get(editorViewCtx);
+    const inlineCodeType = inlineCodeSchema.type(milkCtx);
+    const codeBlockType = codeBlockSchema.type(milkCtx);
+
+    const plugin = new Plugin({
+      key: docsNoInlineCodeKey,
+      appendTransaction(_trs, _old, newState) {
+        const paraRanges: any[] = [];
+        newState.doc.descendants((node: any, pos: number) => {
+          if (node.type.name !== 'paragraph') return;
+          let hasInlineCode = false;
+          node.content.forEach((child: any) => {
+            if (child.isText && child.marks.some((m: any) => m.type === inlineCodeType)) hasInlineCode = true;
+          });
+          if (hasInlineCode) paraRanges.push({ start: pos, end: pos + node.nodeSize, node });
+        });
+        if (paraRanges.length === 0) return null;
+
+        let tr = newState.tr;
+        for (let i = paraRanges.length - 1; i >= 0; i--) {
+          const { start, end, node } = paraRanges[i];
+          const replacement: any[] = [];
+          let pendingText = '';
+          node.content.forEach((child: any) => {
+            if (!child.isText) return;
+            const isCode = child.marks.some((m: any) => m.type === inlineCodeType);
+            if (isCode) {
+              if (pendingText.trim()) {
+                replacement.push(newState.schema.nodes.paragraph.create({}, newState.schema.text(pendingText)));
+                pendingText = '';
+              }
+              if (child.text) replacement.push(codeBlockType.create({}, newState.schema.text(child.text)));
+            } else {
+              pendingText += child.text ?? '';
+            }
+          });
+          if (pendingText.trim()) replacement.push(newState.schema.nodes.paragraph.create({}, newState.schema.text(pendingText)));
+          if (replacement.length) tr = tr.replaceWith(start, end, replacement);
+        }
+        return tr;
+      },
+      props: {
+        decorations(state: any) {
+          const decos: Decoration[] = [];
+          state.doc.descendants((node: any, pos: number) => {
+            if (node.type === codeBlockType && !node.textContent.includes('\n')) {
+              decos.push(Decoration.node(pos, pos + node.nodeSize, { class: 'single-line' }));
+            }
+          });
+          return DecorationSet.create(state.doc, decos);
+        }
+      }
+    });
+
+    view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
+  }
+
   onMount(() => {
     // Inject heading-gap fix once — CSS rules can't be set via :global() for this pattern
     if (!document.getElementById('mk-h-fix')) {
@@ -498,6 +576,8 @@
       editorEl.addEventListener('keydown', handleHeadingShortcut);
       const pm = editorEl.querySelector('.ProseMirror');
       if (pm instanceof HTMLElement) pm.style.paddingTop = '0';
+      patchToolbarCodeButton(c, editorEl);
+      c.editor.action((ctx) => { installCodeBlockPlugin(ctx); });
       if (currentNote && currentMarkdown) {
         crepe.editor.action(replaceAll(makeImagesLoadable(currentMarkdown, currentNote.folder ?? '')));
       } else if ($notes.length > 0) {

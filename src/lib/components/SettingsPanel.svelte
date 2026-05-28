@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { settings, showSettings, syncState } from '$lib/stores';
+  import { settings, showSettings, syncState, theme } from '$lib/stores';
   import { api } from '$lib/api';
   import type { Settings } from '$lib/types';
 
@@ -56,6 +56,32 @@
   </div>
 
   <div class="panel-body">
+    <!-- Appearance section -->
+    <section class="settings-section">
+      <h3>Appearance</h3>
+      <div class="field">
+        <label>Theme</label>
+        <div class="theme-row">
+          {#each [['system','Auto'], ['light','Light'], ['dark','Dark']] as [val, label]}
+            <button
+              class="theme-btn {$theme === val ? 'active' : ''}"
+              onclick={() => theme.set(val as 'system' | 'light' | 'dark')}
+              type="button"
+            >
+              {#if val === 'system'}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+              {:else if val === 'light'}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+              {:else}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              {/if}
+              {label}
+            </button>
+          {/each}
+        </div>
+      </div>
+    </section>
+
     <!-- GitHub Sync section -->
     <section class="settings-section">
       <h3>GitHub Sync</h3>
@@ -138,7 +164,7 @@
   .panel {
     position: fixed; right: 0; top: 0; bottom: 0;
     width: min(480px, 100vw);
-    background: #13131a; border-left: 1px solid #1e1e2e;
+    background: var(--surface); border-left: 1px solid var(--border);
     z-index: 201; display: flex; flex-direction: column;
     animation: slide-in 0.2s ease;
   }
@@ -146,77 +172,87 @@
 
   .panel-header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 20px 24px; border-bottom: 1px solid #1e1e2e; flex-shrink: 0;
+    padding: 20px 24px; border-bottom: 1px solid var(--border); flex-shrink: 0;
   }
-  h2 { font-size: 1.1rem; font-weight: 600; color: #f1f5f9; }
+  h2 { font-size: 1.1rem; font-weight: 600; color: var(--text-1); }
   .close-btn {
     width: 32px; height: 32px; border-radius: 8px; border: none;
-    background: transparent; color: #6b7280; cursor: pointer;
+    background: transparent; color: var(--text-5); cursor: pointer;
     display: flex; align-items: center; justify-content: center;
     transition: background 0.12s, color 0.12s;
   }
-  .close-btn:hover { background: #1e1e2e; color: #e2e8f0; }
+  .close-btn:hover { background: var(--border); color: var(--text-2); }
 
   .panel-body { flex: 1; overflow-y: auto; padding: 20px 24px; display: flex; flex-direction: column; gap: 24px; }
 
   .settings-section { display: flex; flex-direction: column; gap: 14px; }
-  h3 { font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: #64748b; }
-  .section-desc { font-size: 0.82rem; color: #475569; line-height: 1.5; }
+  h3 { font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-6); }
+  .section-desc { font-size: 0.82rem; color: var(--text-7); line-height: 1.5; }
 
   .field { display: flex; flex-direction: column; gap: 5px; }
-  label { font-size: 0.82rem; color: #94a3b8; font-weight: 500; }
-  .field-hint { font-size: 0.75rem; color: #475569; }
-  .field-hint a { color: #818cf8; text-decoration: none; }
+  label { font-size: 0.82rem; color: var(--text-3); font-weight: 500; }
+  .field-hint { font-size: 0.75rem; color: var(--text-7); }
+  .field-hint a { color: var(--accent-lt); text-decoration: none; }
   .field-hint a:hover { text-decoration: underline; }
 
   .input {
-    background: #0f0f14; border: 1px solid #2d2d3d; border-radius: 8px;
-    color: #e2e8f0; padding: 9px 12px; font-size: 0.875rem; outline: none;
+    background: var(--bg); border: 1px solid var(--border-2); border-radius: 8px;
+    color: var(--text-2); padding: 9px 12px; font-size: 0.875rem; outline: none;
     transition: border-color 0.12s;
   }
-  .input:focus { border-color: #6366f1; }
+  .input:focus { border-color: var(--accent); }
   .input.narrow { max-width: 120px; }
 
   .token-row { display: flex; gap: 8px; }
   .token-row .input { flex: 1; }
   .toggle-btn {
-    padding: 0 12px; border-radius: 8px; border: 1px solid #2d2d3d;
-    background: transparent; color: #9ca3af; font-size: 0.8rem; cursor: pointer;
+    padding: 0 12px; border-radius: 8px; border: 1px solid var(--border-2);
+    background: transparent; color: var(--text-4); font-size: 0.8rem; cursor: pointer;
     white-space: nowrap;
   }
-  .toggle-btn:hover { border-color: #4b5563; color: #e2e8f0; }
+  .toggle-btn:hover { border-color: var(--text-8); color: var(--text-2); }
+
+  .theme-row { display: flex; gap: 6px; }
+  .theme-btn {
+    flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-2);
+    background: transparent; color: var(--text-4); font-size: 0.82rem; cursor: pointer;
+    transition: all 0.12s;
+  }
+  .theme-btn:hover { border-color: var(--accent); color: var(--text-2); }
+  .theme-btn.active { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
 
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
   .toggle-row { display: flex; align-items: center; }
-  .toggle-label { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 0.875rem; color: #e2e8f0; }
-  .checkbox { accent-color: #6366f1; width: 16px; height: 16px; cursor: pointer; }
+  .toggle-label { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 0.875rem; color: var(--text-2); }
+  .checkbox { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
 
   .test-result {
     padding: 10px 14px; border-radius: 8px; font-size: 0.82rem;
   }
-  .test-result.success { background: #0e2a1a; color: #34d399; border: 1px solid #1a4a2a; }
-  .test-result.error { background: #2a0e0e; color: #f87171; border: 1px solid #4a1a1a; }
+  .test-result.success { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+  .test-result.error { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border-2); }
 
   .panel-footer {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 24px; border-top: 1px solid #1e1e2e; flex-shrink: 0;
+    padding: 16px 24px; border-top: 1px solid var(--border); flex-shrink: 0;
   }
   .footer-right { display: flex; gap: 8px; }
 
   .btn-primary {
     padding: 9px 18px; border-radius: 8px; border: none;
-    background: #6366f1; color: #fff; font-size: 0.875rem; cursor: pointer;
+    background: var(--accent); color: #fff; font-size: 0.875rem; cursor: pointer;
     transition: background 0.15s;
   }
-  .btn-primary:hover:not(:disabled) { background: #4f46e5; }
+  .btn-primary:hover:not(:disabled) { background: var(--accent-dk); }
   .btn-primary:disabled { opacity: 0.6; cursor: default; }
 
   .btn-ghost {
-    padding: 9px 16px; border-radius: 8px; border: 1px solid #2d2d3d;
-    background: transparent; color: #9ca3af; font-size: 0.875rem; cursor: pointer;
+    padding: 9px 16px; border-radius: 8px; border: 1px solid var(--border-2);
+    background: transparent; color: var(--text-4); font-size: 0.875rem; cursor: pointer;
     transition: all 0.12s;
   }
-  .btn-ghost:hover:not(:disabled) { border-color: #4b5563; color: #e2e8f0; }
+  .btn-ghost:hover:not(:disabled) { border-color: var(--text-8); color: var(--text-2); }
   .btn-ghost:disabled { opacity: 0.6; cursor: default; }
 </style>

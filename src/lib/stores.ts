@@ -15,6 +15,7 @@ export const settings = writable<Settings>({
 });
 
 export const activeView = writable<View>('home');
+export const theme = writable<'system' | 'light' | 'dark'>('system');
 export const activeTimers = writable<Map<string, number>>(new Map());
 export const selectedNoteId = writable<string | null>(null);
 export const showSettings = writable(false);

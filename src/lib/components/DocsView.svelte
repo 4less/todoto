@@ -690,7 +690,7 @@
             <button class="folder-btn {isSelected ? 'active' : ''}"
               onclick={() => { selectedFolder = node.fullPath; toggleFolder(node.fullPath); confirmDeleteFolder = null; }}>
               <span class="folder-chevron">{isExpanded ? '▾' : '▸'}</span>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="{isSelected ? '#6366f1' : 'none'}" stroke="{isSelected ? '#6366f1' : '#9ca3af'}" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="{isSelected ? 'var(--accent)' : 'none'}" stroke="{isSelected ? 'var(--accent)' : 'var(--text-4)'}" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
               <span class="folder-name">{node.name}</span>
               <span class="count">{subtreeNoteCount(node.fullPath)}</span>
             </button>
@@ -730,7 +730,7 @@
           {#if inlineCreate?.type === 'folder' && inlineCreate.parentPath === node.fullPath}
             <div class="folder-row inline-create" style="padding-left: {(depth + 1) * 14}px">
               <span class="folder-chevron">▸</span>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-4)" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
               <input use:focusOnMount class="inline-name-input" bind:value={inlineCreateValue}
                 placeholder="folder name"
                 onkeydown={(e) => { if (e.key === 'Enter') commitInlineCreate(); if (e.key === 'Escape') cancelInlineCreate(); }}
@@ -742,7 +742,7 @@
           {#if inlineCreate?.type === 'note' && inlineCreate.parentPath === node.fullPath}
             <ul class="note-items" style="padding-left: {(depth + 1) * 14}px">
               <li class="note-item inline-create">
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" style="flex-shrink:0;margin-left:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-4)" stroke-width="2" style="flex-shrink:0;margin-left:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                 <input use:focusOnMount class="inline-name-input" bind:value={inlineCreateValue}
                   placeholder="document name"
                   onkeydown={(e) => { if (e.key === 'Enter') commitInlineCreate(); if (e.key === 'Escape') cancelInlineCreate(); }}
@@ -766,7 +766,7 @@
       {#if inlineCreate?.type === 'folder' && inlineCreate.parentPath === ''}
         <div class="folder-row inline-create">
           <span class="folder-chevron">▸</span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-4)" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           <input use:focusOnMount class="inline-name-input" bind:value={inlineCreateValue}
             placeholder="folder name"
             onkeydown={(e) => { if (e.key === 'Enter') commitInlineCreate(); if (e.key === 'Escape') cancelInlineCreate(); }}
@@ -778,7 +778,7 @@
       {#if inlineCreate?.type === 'note' && inlineCreate.parentPath === ''}
         <ul class="note-items" style="padding-left: 14px">
           <li class="note-item inline-create">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" style="flex-shrink:0;margin-left:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-4)" stroke-width="2" style="flex-shrink:0;margin-left:6px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
             <input use:focusOnMount class="inline-name-input" bind:value={inlineCreateValue}
               placeholder="document name"
               onkeydown={(e) => { if (e.key === 'Enter') commitInlineCreate(); if (e.key === 'Escape') cancelInlineCreate(); }}
@@ -802,7 +802,7 @@
             <button class="folder-btn {isSelected ? 'active' : ''}"
               onclick={() => { selectedFolder = ''; toggleFolder(''); confirmDeleteFolder = null; }}>
               <span class="folder-chevron">{isExpanded ? '▾' : '▸'}</span>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-4)" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
               <span class="folder-name">Uncategorized</span>
               <span class="count">{rootNotes.length}</span>
             </button>
@@ -881,7 +881,7 @@
 
     {#if !currentNote}
       <div class="no-doc">
-        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#2d2d3d" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--border-2)" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
         <p>Select a document or create a new one</p>
         <button class="btn-primary" onclick={() => startInlineCreate('note', '')}>New document</button>
       </div>
@@ -929,48 +929,48 @@
 
   /* ── Sidebar ── */
   .note-list {
-    width: 230px; min-width: 230px; background: #13131a;
-    border-right: 1px solid #1e1e2e; display: flex; flex-direction: column; overflow: hidden;
+    width: 230px; min-width: 230px; background: var(--surface);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden;
   }
   .note-list-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 14px 12px 8px; flex-shrink: 0;
   }
-  .section-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; }
+  .section-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-6); }
   .icon-btn {
     width: 24px; height: 24px; border-radius: 6px; border: none;
-    background: #1e1e2e; color: #9ca3af; cursor: pointer;
+    background: var(--border); color: var(--text-4); cursor: pointer;
     display: flex; align-items: center; justify-content: center; transition: background 0.12s, color 0.12s;
   }
-  .icon-btn:hover { background: #6366f1; color: #fff; }
+  .icon-btn:hover { background: var(--accent); color: #fff; }
 
   .new-note-form { padding: 0 8px 10px; display: flex; flex-direction: column; gap: 5px; }
   .note-input {
-    background: #0f0f14; border: 1px solid #6366f1; border-radius: 7px;
-    color: #e2e8f0; padding: 6px 10px; font-size: 0.8rem; outline: none; width: 100%;
+    background: var(--bg); border: 1px solid var(--accent); border-radius: 7px;
+    color: var(--text-2); padding: 6px 10px; font-size: 0.8rem; outline: none; width: 100%;
   }
-  .rename-inline { border-color: #818cf8; margin: 2px 4px; width: calc(100% - 8px); }
+  .rename-inline { border-color: var(--accent-lt); margin: 2px 4px; width: calc(100% - 8px); }
   .form-row { display: flex; gap: 5px; }
   .btn-create {
     flex: 1; padding: 6px; border-radius: 7px; border: none;
-    background: #6366f1; color: #fff; font-size: 0.8rem; cursor: pointer;
+    background: var(--accent); color: #fff; font-size: 0.8rem; cursor: pointer;
   }
-  .btn-create:hover { background: #4f46e5; }
+  .btn-create:hover { background: var(--accent-dk); }
   .btn-cancel {
-    padding: 6px 10px; border-radius: 7px; border: 1px solid #2d2d3d;
-    background: transparent; color: #6b7280; cursor: pointer; font-size: 0.8rem;
+    padding: 6px 10px; border-radius: 7px; border: 1px solid var(--border-2);
+    background: transparent; color: var(--text-5); cursor: pointer; font-size: 0.8rem;
   }
 
   .folder-all {
     display: flex; align-items: center; gap: 7px;
     padding: 7px 12px; margin: 0 4px 2px; border-radius: 8px;
-    border: none; background: transparent; color: #9ca3af;
+    border: none; background: transparent; color: var(--text-4);
     font-size: 0.82rem; cursor: pointer; text-align: left; width: calc(100% - 8px);
     transition: background 0.12s, color 0.12s;
   }
-  .folder-all:hover { background: #1a1a28; color: #e2e8f0; }
-  .folder-all.active { background: #1e1e3a; color: #6366f1; }
-  .folder-all.drag-over { background: #1e2a1e; border: 1px dashed #34d399; color: #34d399; }
+  .folder-all:hover { background: var(--surface-alt); color: var(--text-2); }
+  .folder-all.active { background: var(--accent-bg); color: var(--accent); }
+  .folder-all.drag-over { background: var(--green-surface); border: 1px dashed var(--green); color: var(--green); }
 
   .folder-tree { flex: 1; overflow-y: auto; padding: 0 4px 12px; }
 
@@ -978,16 +978,16 @@
     display: flex; align-items: center; border-radius: 8px;
     transition: background 0.1s;
   }
-  .folder-row.drag-over { background: #1e2a1e; outline: 1px dashed #34d399; }
+  .folder-row.drag-over { background: var(--green-surface); outline: 1px dashed var(--green); }
   .folder-btn {
     display: flex; align-items: center; gap: 6px;
     padding: 6px 8px; border-radius: 8px; border: none;
-    background: transparent; color: #9ca3af;
+    background: transparent; color: var(--text-4);
     font-size: 0.82rem; cursor: pointer; flex: 1; text-align: left;
     transition: background 0.12s, color 0.12s;
   }
-  .folder-btn:hover { background: #1a1a28; color: #e2e8f0; }
-  .folder-btn.active { color: #6366f1; }
+  .folder-btn:hover { background: var(--surface-alt); color: var(--text-2); }
+  .folder-btn.active { color: var(--accent); }
   .folder-chevron { font-size: 0.6rem; width: 10px; }
   .folder-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -997,11 +997,11 @@
   .folder-row:hover .folder-actions { display: flex; }
 
   .folder-delete-hint {
-    font-size: 0.68rem; color: #f87171; padding: 2px 8px 4px 22px;
+    font-size: 0.68rem; color: var(--red); padding: 2px 8px 4px 22px;
   }
 
   .count {
-    font-size: 0.68rem; color: #4b5563; background: #1e1e2e;
+    font-size: 0.68rem; color: var(--text-8); background: var(--border);
     padding: 1px 5px; border-radius: 8px; flex-shrink: 0;
   }
 
@@ -1012,18 +1012,18 @@
     transition: background 0.12s; margin-bottom: 1px;
     cursor: grab;
   }
-  .note-item:hover { background: #1a1a28; }
-  .note-item.active { background: #1e1e3a; }
+  .note-item:hover { background: var(--surface-alt); }
+  .note-item.active { background: var(--accent-bg); }
   .note-item.dragging { opacity: 0.4; }
   .note-item-select {
     flex: 1; min-width: 0; padding: 7px 6px; border-radius: 7px;
     background: transparent; border: none; text-align: left; cursor: pointer;
   }
   .note-item-title {
-    font-size: 0.8rem; color: #e2e8f0; font-weight: 500;
+    font-size: 0.8rem; color: var(--text-2); font-weight: 500;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .note-item-meta { font-size: 0.68rem; color: #475569; margin-top: 1px; }
+  .note-item-meta { font-size: 0.68rem; color: var(--text-7); margin-top: 1px; }
   .pin { font-size: 0.65em; margin-right: 2px; }
   .note-item-actions {
     display: none; gap: 1px; padding-right: 3px; flex-shrink: 0;
@@ -1031,36 +1031,36 @@
   .note-item:hover .note-item-actions { display: flex; }
   .micro-btn {
     width: 20px; height: 20px; border-radius: 4px; border: none;
-    background: #2d2d3d; color: #9ca3af; cursor: pointer;
+    background: var(--border-2); color: var(--text-4); cursor: pointer;
     display: flex; align-items: center; justify-content: center; transition: all 0.12s;
     font-size: 0.65rem;
   }
-  .micro-btn:hover { background: #3d3d50; color: #e2e8f0; }
-  .micro-btn.danger:hover { background: #2a0e0e; color: #f87171; }
-  .micro-btn.warning:hover { background: #1a2a1a; color: #34d399; }
-  .empty-note { color: #475569; font-size: 0.8rem; padding: 12px; }
+  .micro-btn:hover { background: var(--border-2); color: var(--text-2); }
+  .micro-btn.danger:hover { background: var(--red-bg); color: var(--red); }
+  .micro-btn.warning:hover { background: var(--green-surface); color: var(--green); }
+  .empty-note { color: var(--text-7); font-size: 0.8rem; padding: 12px; }
 
   /* ── Editor ── */
   .editor-area {
     flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden;
-    background: #0f0f14;
+    background: var(--bg);
   }
 
   .editor-toolbar {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 16px; border-bottom: 1px solid #1e1e2e; flex-shrink: 0; gap: 8px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; gap: 8px;
   }
   .toolbar-left { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
   .toolbar-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
   .title-input {
     flex: 1; min-width: 0; background: transparent; border: none; outline: none;
-    color: #f1f5f9; font-size: 1.05rem; font-weight: 600;
+    color: var(--text-1); font-size: 1.05rem; font-weight: 600;
   }
-  .title-input::placeholder { color: #475569; }
+  .title-input::placeholder { color: var(--text-7); }
 
-  .saving-indicator { font-size: 0.72rem; color: #64748b; }
-  .icon-btn.active { background: #3730a3; color: #a5b4fc; }
+  .saving-indicator { font-size: 0.72rem; color: var(--text-6); }
+  .icon-btn.active { background: var(--accent-deep); color: var(--accent-ltr); }
 
   /* ── Milkdown wrapper ── */
   .milkdown-wrapper { flex: 1; overflow-y: auto; min-height: 0; }
@@ -1068,21 +1068,21 @@
 
   /* Override Crepe nord-dark variables to match the app's indigo palette */
   :global(.milkdown) {
-    --crepe-color-background: #0f0f14;
-    --crepe-color-surface: #13131a;
-    --crepe-color-surface-low: #0f0f14;
-    --crepe-color-on-background: #e2e8f0;
-    --crepe-color-on-surface: #cbd5e1;
-    --crepe-color-on-surface-variant: #94a3b8;
-    --crepe-color-outline: #2d2d3d;
-    --crepe-color-primary: #6366f1;
-    --crepe-color-secondary: #1e1e3a;
-    --crepe-color-on-secondary: #a5b4fc;
-    --crepe-color-inline-code: #a78bfa;
-    --crepe-color-inline-area: #1e1e2e;
-    --crepe-color-hover: #1e1e3a;
+    --crepe-color-background: var(--bg);
+    --crepe-color-surface: var(--surface);
+    --crepe-color-surface-low: var(--bg);
+    --crepe-color-on-background: var(--text-2);
+    --crepe-color-on-surface: var(--text-2);
+    --crepe-color-on-surface-variant: var(--text-3);
+    --crepe-color-outline: var(--border-2);
+    --crepe-color-primary: var(--accent);
+    --crepe-color-secondary: var(--accent-bg);
+    --crepe-color-on-secondary: var(--accent-ltr);
+    --crepe-color-inline-code: var(--accent-purple);
+    --crepe-color-inline-area: var(--border);
+    --crepe-color-hover: var(--accent-bg);
     --crepe-color-selected: rgba(99, 102, 241, 0.45);
-    --crepe-color-error: #f87171;
+    --crepe-color-error: var(--red);
     --crepe-shadow-1: none;
     --crepe-shadow-2: none;
   }
@@ -1094,33 +1094,33 @@
     max-width: 820px;
     font-size: 0.925rem;
     line-height: 1.75;
-    color: #e2e8f0;
-    caret-color: #818cf8;
+    color: var(--text-2);
+    caret-color: var(--accent-lt);
   }
   /* Ensure block-edit handle positions relative to the wrapper, not viewport */
   :global(.milkdown-wrapper .milkdown) { position: relative; }
 
   .no-doc {
     flex: 1; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 14px; color: #475569;
+    justify-content: center; gap: 14px; color: var(--text-7);
   }
   .no-doc p { font-size: 0.875rem; }
   .btn-primary {
     padding: 10px 20px; border-radius: 8px; border: none;
-    background: #6366f1; color: #fff; font-size: 0.875rem; cursor: pointer;
+    background: var(--accent); color: #fff; font-size: 0.875rem; cursor: pointer;
   }
-  .btn-primary:hover { background: #4f46e5; }
+  .btn-primary:hover { background: var(--accent-dk); }
 
   .editor-hint {
-    padding: 5px 20px; font-size: 0.7rem; color: #374151;
-    border-top: 1px solid #1a1a28; flex-shrink: 0;
+    padding: 5px 20px; font-size: 0.7rem; color: var(--text-8);
+    border-top: 1px solid var(--surface-alt); flex-shrink: 0;
   }
-  .editor-hint code { background: #1e1e2e; padding: 1px 4px; border-radius: 3px; color: #6366f1; }
+  .editor-hint code { background: var(--border); padding: 1px 4px; border-radius: 3px; color: var(--accent); }
 
   /* ── Raw editor ── */
   .raw-editor {
     flex: 1; min-height: 0; padding: 16px 32px; margin: 0; border: none; outline: none; resize: none;
-    background: #0a0a10; color: #cbd5e1;
+    background: var(--bg-deep); color: var(--text-2);
     font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
     font-size: 0.875rem; line-height: 1.7; tab-size: 2;
   }
@@ -1131,7 +1131,7 @@
 
   /* ── Context / dropdown menus ── */
   .ctx-menu {
-    background: #1a1a28; border: 1px solid #2d2d3d; border-radius: 8px;
+    background: var(--surface-alt); border: 1px solid var(--border-2); border-radius: 8px;
     padding: 4px; min-width: 160px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
     display: flex; flex-direction: column; gap: 1px;
   }
@@ -1142,26 +1142,26 @@
   .ctx-item {
     display: flex; align-items: center; gap: 8px;
     padding: 6px 10px; border-radius: 5px; border: none;
-    background: transparent; color: #cbd5e1;
+    background: transparent; color: var(--text-2);
     font-size: 0.8rem; cursor: pointer; text-align: left; width: 100%;
     transition: background 0.1s, color 0.1s;
   }
-  .ctx-item:hover { background: #2d2d3d; color: #f1f5f9; }
-  .ctx-item.danger { color: #f87171; }
-  .ctx-item.danger:hover { background: #2a0e0e; }
-  .ctx-sep { height: 1px; background: #2d2d3d; margin: 3px 0; }
+  .ctx-item:hover { background: var(--border-2); color: var(--text-1); }
+  .ctx-item.danger { color: var(--red); }
+  .ctx-item.danger:hover { background: var(--red-bg); }
+  .ctx-sep { height: 1px; background: var(--border-2); margin: 3px 0; }
 
   /* ── Inline creation inputs ── */
   .inline-name-input {
-    flex: 1; background: #0f0f14; border: 1px solid #6366f1; border-radius: 5px;
-    color: #e2e8f0; padding: 3px 7px; font-size: 0.8rem; outline: none;
+    flex: 1; background: var(--bg); border: 1px solid var(--accent); border-radius: 5px;
+    color: var(--text-2); padding: 3px 7px; font-size: 0.8rem; outline: none;
     min-width: 0;
   }
   .note-item.inline-create { cursor: default; padding: 4px 6px; gap: 6px; }
   .folder-row.inline-create { padding-top: 3px; padding-bottom: 3px; gap: 6px; }
 
   @media (max-width: 600px) {
-    .note-list { width: 100%; min-width: unset; max-height: 180px; border-right: none; border-bottom: 1px solid #1e1e2e; }
+    .note-list { width: 100%; min-width: unset; max-height: 180px; border-right: none; border-bottom: 1px solid var(--border); }
     .docs { flex-direction: column; }
   }
 </style>

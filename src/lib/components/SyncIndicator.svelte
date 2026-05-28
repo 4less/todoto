@@ -40,18 +40,18 @@
   .sync-btn {
     display: flex; align-items: center; gap: 6px;
     padding: 7px 12px; border-radius: 8px; border: none;
-    background: transparent; color: #6b7280;
+    background: transparent; color: var(--text-5);
     font-size: 0.78rem; cursor: pointer;
     transition: background 0.15s, color 0.15s; width: 100%; text-align: left;
   }
-  .sync-btn:hover { background: #1e1e2e; color: #e2e8f0; }
+  .sync-btn:hover { background: var(--border); color: var(--text-2); }
 
   .sync-icon { transition: transform 0.3s; }
   .sync-icon.spinning { animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
   .sync-error {
-    font-size: 0.72rem; color: #f87171;
+    font-size: 0.72rem; color: var(--red);
     padding: 2px 12px 6px;
     line-height: 1.5;
     word-break: break-word;

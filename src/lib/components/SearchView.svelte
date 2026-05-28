@@ -54,7 +54,7 @@
   }
 
   function priorityColor(p: string) {
-    return p === 'high' ? '#f87171' : p === 'medium' ? '#fbbf24' : '#6b7280';
+    return p === 'high' ? 'var(--red)' : p === 'medium' ? 'var(--yellow)' : 'var(--text-5)';
   }
 </script>
 
@@ -64,7 +64,7 @@
   </header>
 
   <div class="search-box">
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-5)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
     <input
       class="search-input"
       placeholder="Search notes, tasks, tags…"
@@ -102,7 +102,7 @@
                 </div>
               {/if}
             </div>
-            <svg class="result-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+            <svg class="result-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-5)" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
           </li>
         {:else}
           <li class="result-card todo-result" onclick={() => activeView.set('tasks')}>
@@ -126,7 +126,7 @@
     </ul>
   {:else}
     <div class="empty-state">
-      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#2d2d3d" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--border-2)" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       <p>Search across all your notes and tasks</p>
     </div>
   {/if}
@@ -135,66 +135,66 @@
 <style>
   .search-view { height: 100%; overflow-y: auto; padding: 28px 32px; display: flex; flex-direction: column; gap: 20px; }
 
-  .page-header h1 { font-size: 1.6rem; font-weight: 700; color: #f1f5f9; }
+  .page-header h1 { font-size: 1.6rem; font-weight: 700; color: var(--text-1); }
 
   .search-box {
     display: flex; align-items: center; gap: 10px;
-    background: #13131a; border: 1px solid #2d2d3d; border-radius: 12px;
+    background: var(--surface); border: 1px solid var(--border-2); border-radius: 12px;
     padding: 12px 16px;
     transition: border-color 0.15s;
   }
-  .search-box:focus-within { border-color: #6366f1; }
+  .search-box:focus-within { border-color: var(--accent); }
   .search-input {
     flex: 1; background: transparent; border: none; outline: none;
-    color: #e2e8f0; font-size: 1rem;
+    color: var(--text-2); font-size: 1rem;
   }
-  .search-input::placeholder { color: #475569; }
+  .search-input::placeholder { color: var(--text-7); }
   .clear-btn {
-    background: none; border: none; color: #6b7280; cursor: pointer;
+    background: none; border: none; color: var(--text-5); cursor: pointer;
     display: flex; padding: 2px; border-radius: 4px;
     transition: color 0.12s;
   }
-  .clear-btn:hover { color: #e2e8f0; }
+  .clear-btn:hover { color: var(--text-2); }
 
-  .hint, .empty { color: #475569; font-size: 0.875rem; }
-  .results-header { font-size: 0.78rem; color: #64748b; }
+  .hint, .empty { color: var(--text-7); font-size: 0.875rem; }
+  .results-header { font-size: 0.78rem; color: var(--text-6); }
 
   .results { list-style: none; display: flex; flex-direction: column; gap: 8px; }
 
   .result-card {
-    background: #13131a; border: 1px solid #1e1e2e; border-radius: 10px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
     padding: 14px 16px; display: flex; align-items: flex-start; gap: 12px;
     cursor: pointer; transition: border-color 0.12s;
   }
-  .result-card:hover { border-color: #6366f1; }
+  .result-card:hover { border-color: var(--accent); }
 
   .result-type-badge {
     font-size: 0.62rem; font-weight: 700; padding: 2px 6px; border-radius: 4px;
     flex-shrink: 0; margin-top: 2px; letter-spacing: 0.05em;
   }
-  .note-badge { background: #1e1e3a; color: #818cf8; }
-  .todo-badge { background: #1a2e1a; color: #34d399; }
+  .note-badge { background: var(--accent-bg); color: var(--accent-lt); }
+  .todo-badge { background: var(--green-surface); color: var(--green); }
 
   .result-body { flex: 1; min-width: 0; }
-  .result-title { font-size: 0.9rem; color: #e2e8f0; font-weight: 500; }
-  .result-title.done { text-decoration: line-through; color: #64748b; }
+  .result-title { font-size: 0.9rem; color: var(--text-2); font-weight: 500; }
+  .result-title.done { text-decoration: line-through; color: var(--text-6); }
   .result-title-row { display: flex; align-items: center; gap: 8px; }
   .priority-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
   .result-excerpt {
-    font-size: 0.8rem; color: #64748b; margin-top: 4px;
+    font-size: 0.8rem; color: var(--text-6); margin-top: 4px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .result-tags { display: flex; gap: 5px; margin-top: 6px; flex-wrap: wrap; }
-  .tag-chip { font-size: 0.7rem; color: #818cf8; background: #1e1e3a; padding: 1px 6px; border-radius: 4px; }
-  .due-chip { font-size: 0.7rem; color: #fbbf24; background: #2a1f00; padding: 1px 6px; border-radius: 4px; }
-  .done-chip { font-size: 0.7rem; color: #34d399; background: #0e2a1a; padding: 1px 6px; border-radius: 4px; }
+  .tag-chip { font-size: 0.7rem; color: var(--accent-lt); background: var(--accent-bg); padding: 1px 6px; border-radius: 4px; }
+  .due-chip { font-size: 0.7rem; color: var(--yellow); background: var(--yellow-bg); padding: 1px 6px; border-radius: 4px; }
+  .done-chip { font-size: 0.7rem; color: var(--green); background: var(--green-bg); padding: 1px 6px; border-radius: 4px; }
   .result-arrow { flex-shrink: 0; margin-top: 4px; }
 
-  :global(mark) { background: #3730a3; color: #e2e8f0; border-radius: 2px; padding: 0 1px; }
+  :global(mark) { background: var(--accent-deep); color: var(--text-2); border-radius: 2px; padding: 0 1px; }
 
   .empty-state {
     flex: 1; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 12px; color: #475569;
+    justify-content: center; gap: 12px; color: var(--text-7);
   }
   .empty-state p { font-size: 0.875rem; }
 

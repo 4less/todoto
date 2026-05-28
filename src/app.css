@@ -1,0 +1,95 @@
+/* ── Theme: CSS custom properties ─────────────────────────────────────── */
+/* Dark is the default; light overrides are in [data-theme="light"]. */
+/* The theme is applied by JS (see +page.svelte) so we only need two rules. */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg-deep:      #0a0a10;
+  --bg:           #0f0f14;
+  --surface:      #13131a;
+  --surface-alt:  #1a1a28;
+  --border:       #1e1e2e;
+  --border-2:     #2d2d3d;
+
+  /* Accent-tinted surfaces */
+  --accent-bg:    #1e1e3a;
+  --accent-bg-2:  #2a2050;
+
+  /* Status-tinted surfaces */
+  --green-surface: #1e2a1e;
+  --green-bg:      #0d2018;
+  --green-border:  #1a4a2a;
+
+  /* Text — descending brightness */
+  --text-1: #f1f5f9;
+  --text-2: #e2e8f0;
+  --text-3: #94a3b8;
+  --text-4: #9ca3af;
+  --text-5: #6b7280;
+  --text-6: #64748b;
+  --text-7: #475569;
+  --text-8: #4b5563;
+
+  /* Accent */
+  --accent:        #6366f1;
+  --accent-dk:     #4f46e5;
+  --accent-deep:   #3730a3;
+  --accent-lt:     #818cf8;
+  --accent-ltr:    #a5b4fc;
+  --accent-purple: #a78bfa;
+
+  /* Status */
+  --green:        #34d399;
+  --yellow:       #fbbf24;
+  --yellow-bg:    #2a1f00;
+  --red:          #f87171;
+  --red-bg:       #2a0e0e;
+  --red-border:   #3a1414;
+  --red-border-2: #4a1a1a;
+  --red-deep:     #7f1d1d;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-deep:      #f1f5f9;
+  --bg:           #f0f2f7;
+  --surface:      #ffffff;
+  --surface-alt:  #f8fafc;
+  --border:       #e2e8f0;
+  --border-2:     #cbd5e1;
+
+  --accent-bg:    #eef2ff;
+  --accent-bg-2:  #e0e7ff;
+
+  --green-surface: #f0fdf4;
+  --green-bg:      #dcfce7;
+  --green-border:  #bbf7d0;
+
+  --text-1: #0f172a;
+  --text-2: #1e293b;
+  --text-3: #475569;
+  --text-4: #64748b;
+  --text-5: #64748b;
+  --text-6: #94a3b8;
+  --text-7: #94a3b8;
+  --text-8: #9ca3af;
+
+  --accent:        #6366f1;
+  --accent-dk:     #4f46e5;
+  --accent-deep:   #3730a3;
+  --accent-lt:     #4f46e5;
+  --accent-ltr:    #4338ca;
+  --accent-purple: #7c3aed;
+
+  --green:        #16a34a;
+  --yellow:       #ca8a04;
+  --yellow-bg:    #fefce8;
+  --red:          #dc2626;
+  --red-bg:       #fef2f2;
+  --red-border:   #fca5a5;
+  --red-border-2: #f87171;
+  --red-deep:     #ef4444;
+}

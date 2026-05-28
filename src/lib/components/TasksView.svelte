@@ -760,7 +760,10 @@
   @media (max-width: 600px) {
     .tasks { padding: 16px 16px 12px; }
     .form-row { flex-direction: column; }
-    .sel-btn { padding: 6px 8px; }
+    .selection-bar { flex-wrap: wrap; row-gap: 6px; border-radius: 10px; }
+    .sel-spacer { display: none; }
+    .sel-btn { padding: 6px 10px; font-size: 0.78rem; flex-shrink: 0; }
+    .sel-count { width: 100%; }
   }
 
   /* Notes indicator on task card */
@@ -816,6 +819,8 @@
     line-height: 1.65;
     min-height: 120px;
     outline: none;
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
   :global(.notes-editor-wrap .milkdown) { position: relative; }
 

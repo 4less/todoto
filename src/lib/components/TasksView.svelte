@@ -6,8 +6,6 @@
   import { serializeAnnotations } from '$lib/taskAnnotations';
   import DatePicker from '$lib/components/DatePicker.svelte';
   import { Crepe, CrepeFeature } from '@milkdown/crepe';
-  import '@milkdown/crepe/theme/common/style.css';
-  import '@milkdown/crepe/theme/nord-dark.css';
   import { replaceAll } from '@milkdown/utils';
 
   // ── Filter state ──────────────────────────────────────────────────────────
@@ -582,6 +580,9 @@
 </div>
 
 <style>
+  @import '@milkdown/crepe/theme/common/style.css';
+  @import '@milkdown/crepe/theme/nord-dark.css';
+
   .tasks { height: 100%; overflow-y: auto; padding: 28px 32px 16px; display: flex; flex-direction: column; gap: 16px; }
 
   .page-header { display: flex; justify-content: space-between; align-items: flex-start; }

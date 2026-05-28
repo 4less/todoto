@@ -10,6 +10,7 @@
   import SyncIndicator from '$lib/components/SyncIndicator.svelte';
 
   let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
+  let loading = $state(true);
 
   async function loadAll() {
     const [n, t, s, f] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings(), api.getFolders()]);
@@ -70,7 +71,7 @@
   }
 
   onMount(() => {
-    loadAll();
+    loadAll().finally(() => { loading = false; });
     const onFocus = () => void refreshNotesFromDisk();
     window.addEventListener('keydown', handleKeydown);
     window.addEventListener('focus', onFocus);
@@ -164,6 +165,16 @@
   {#if $showSettings}
     <SettingsPanel onSaved={loadAll} />
   {/if}
+
+  <div class="splash {loading ? '' : 'done'}">
+    <div class="splash-content">
+      <img src="/logo.png" alt="" class="splash-logo" />
+      <span class="splash-wordmark">todoto</span>
+      <div class="splash-dots">
+        <span></span><span></span><span></span>
+      </div>
+    </div>
+  </div>
 </div>
 
 <style>
@@ -254,5 +265,53 @@
     .sidebar { display: none; }
     .bottom-nav { display: flex; }
     .main { padding-bottom: 68px; }
+  }
+
+  .splash {
+    position: fixed; inset: 0; z-index: 1000;
+    background: #0f0f14;
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity 0.4s ease, visibility 0.4s ease;
+  }
+  .splash.done { opacity: 0; visibility: hidden; pointer-events: none; }
+
+  .splash-content {
+    display: flex; flex-direction: column; align-items: center; gap: 16px;
+    animation: splash-rise 0.5s ease both;
+  }
+
+  .splash-logo {
+    width: 56px; height: 56px; object-fit: contain;
+    animation: splash-pulse 2s ease-in-out infinite;
+  }
+
+  .splash-wordmark {
+    font-size: 1.8rem; font-weight: 700; letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #6366f1, #a78bfa);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+  }
+
+  .splash-dots {
+    display: flex; gap: 6px; margin-top: 4px;
+  }
+  .splash-dots span {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #6366f1; opacity: 0.3;
+    animation: splash-dot 1.2s ease-in-out infinite;
+  }
+  .splash-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .splash-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes splash-rise {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes splash-pulse {
+    0%, 100% { transform: scale(1);    opacity: 1;    }
+    50%       { transform: scale(1.06); opacity: 0.85; }
+  }
+  @keyframes splash-dot {
+    0%, 80%, 100% { opacity: 0.3; transform: scale(1);    }
+    40%           { opacity: 1;   transform: scale(1.4);  }
   }
 </style>

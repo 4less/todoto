@@ -1,12 +1,16 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { todos } from '$lib/stores';
+  import { todos, activeTimers } from '$lib/stores';
   import { api } from '$lib/api';
   import type { Todo, WorkSession } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
   import DatePicker from '$lib/components/DatePicker.svelte';
   import { Crepe, CrepeFeature } from '@milkdown/crepe';
   import { replaceAll } from '@milkdown/utils';
+  import { commandsCtx, editorViewCtx } from '@milkdown/kit/core';
+  import { setBlockTypeCommand, codeBlockSchema, inlineCodeSchema } from '@milkdown/kit/preset/commonmark';
+  import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
+  import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
 
   // ── Filter state ──────────────────────────────────────────────────────────
   let filterStatus: 'all' | 'pending' | 'done' = $state('all');
@@ -35,18 +39,30 @@
   let confirmDelete = $state(false);
 
   // ── Timer state ───────────────────────────────────────────────────────────
-  let activeTimers: Map<string, number> = $state(new Map());
   let expandedSessions: string | null = $state(null);
   let tick = $state(0);
   let tickInterval: ReturnType<typeof setInterval> | null = null;
+
+  // ── Focus mode ────────────────────────────────────────────────────────────
+  let focusMode = $state(false);
+  let focusTodoId = $derived([...$activeTimers.keys()][0] ?? null);
+  let focusTodo = $derived(focusTodoId ? ($todos.find((t) => t.id === focusTodoId) ?? null) : null);
+
+  $effect(() => {
+    if ($activeTimers.size === 0) focusMode = false;
+  });
+  $effect(() => {
+    if (focusMode && focusTodo && notesOpenId !== focusTodo.id) openNotes(focusTodo);
+  });
 
   // ── Notes state ───────────────────────────────────────────────────────────
   let notesOpenId: string | null = $state(null);
   let notesContent: string = $state('');
   let notesSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let notesEditorInstance: Crepe | null = null;
 
   $effect(() => {
-    if (activeTimers.size > 0) {
+    if ($activeTimers.size > 0) {
       if (!tickInterval) tickInterval = setInterval(() => { tick++; }, 1000);
     } else {
       if (tickInterval) { clearInterval(tickInterval); tickInterval = null; }
@@ -62,15 +78,26 @@
   let allTags = $derived([...new Set($todos.flatMap((t) => t.tags))].sort());
 
   let filtered = $derived(
-    $todos.filter((t) => {
-      if (filterStatus === 'pending' && t.done) return false;
-      if (filterStatus === 'done' && !t.done) return false;
-      if (filterPriority && t.priority !== filterPriority) return false;
-      if (filterTag && !t.tags.includes(filterTag)) return false;
-      if (searchQ && !t.title.toLowerCase().includes(searchQ.toLowerCase())) return false;
-      return true;
-    })
+    $todos
+      .filter((t) => {
+        if (filterStatus === 'pending' && t.done) return false;
+        if (filterStatus === 'done' && !t.done) return false;
+        if (filterPriority && t.priority !== filterPriority) return false;
+        if (filterTag && !t.tags.includes(filterTag)) return false;
+        if (searchQ && !t.title.toLowerCase().includes(searchQ.toLowerCase())) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.done !== b.done) return a.done ? 1 : -1;
+        if (!a.due_date && !b.due_date) return 0;
+        if (!a.due_date) return 1;
+        if (!b.due_date) return -1;
+        return a.due_date.localeCompare(b.due_date);
+      })
   );
+
+  let pendingTodos = $derived(filtered.filter((t) => !t.done));
+  let doneTodos = $derived(filtered.filter((t) => t.done));
 
   let selTodo = $derived(
     selectedIds.size === 1 ? $todos.find((t) => selectedIds.has(t.id)) ?? null : null
@@ -81,11 +108,9 @@
     const now = new Date().toISOString();
     const markingDone = !todo.done;
 
-    if (activeTimers.has(todo.id)) {
-      const startMs = activeTimers.get(todo.id)!;
-      const newMap = new Map(activeTimers);
-      newMap.delete(todo.id);
-      activeTimers = newMap;
+    if ($activeTimers.has(todo.id)) {
+      const startMs = $activeTimers.get(todo.id)!;
+      activeTimers.update((m) => { m.delete(todo.id); return m; });
       const session: WorkSession = { start: new Date(startMs).toISOString(), end: now };
       todo = { ...todo, work_sessions: [...(todo.work_sessions ?? []), session] };
     }
@@ -101,9 +126,7 @@
 
   async function startTimer(todo: Todo) {
     const now = new Date().toISOString();
-    const newMap = new Map(activeTimers);
-    newMap.set(todo.id, Date.now());
-    activeTimers = newMap;
+    activeTimers.update((m) => { m.set(todo.id, Date.now()); return m; });
     if (!todo.started_at) {
       const updated = await api.saveTodo({ ...todo, started_at: now });
       todos.update((ts) => ts.map((t) => (t.id === updated.id ? updated : t)));
@@ -111,11 +134,9 @@
   }
 
   async function stopTimer(todo: Todo) {
-    const startMs = activeTimers.get(todo.id);
+    const startMs = $activeTimers.get(todo.id);
     if (!startMs) return;
-    const newMap = new Map(activeTimers);
-    newMap.delete(todo.id);
-    activeTimers = newMap;
+    activeTimers.update((m) => { m.delete(todo.id); return m; });
 
     const session: WorkSession = {
       start: new Date(startMs).toISOString(),
@@ -162,7 +183,7 @@
   }
 
   async function deleteTodo(id: string) {
-    activeTimers.delete(id);
+    activeTimers.update((m) => { m.delete(id); return m; });
     await api.deleteTodo(id);
     todos.update((ts) => ts.filter((t) => t.id !== id));
   }
@@ -198,6 +219,142 @@
     }, 800);
   }
 
+  const COPY_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+  const CHECK_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+
+  function makeCopyBtn(getText: () => string): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.className = 'code-copy-btn';
+    btn.title = 'Copy';
+    btn.innerHTML = COPY_SVG;
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      navigator.clipboard.writeText(getText()).then(() => {
+        btn.innerHTML = CHECK_SVG;
+        setTimeout(() => { btn.innerHTML = COPY_SVG; }, 1200);
+      });
+    });
+    return btn;
+  }
+
+  function patchToolbarCodeButton(editorInstance: Crepe, el: HTMLElement) {
+    const toolbar = el.querySelector('.toolbar');
+    if (!toolbar) return;
+    toolbar.addEventListener('pointerdown', (e) => {
+      const btn = (e.target as Element).closest('.toolbar-item');
+      if (!btn || !btn.innerHTML.includes('9.4 16.6')) return;
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      editorInstance.editor.action((ctx) => {
+        const commands = ctx.get(commandsCtx);
+        commands.call(setBlockTypeCommand.key, { nodeType: codeBlockSchema.type(ctx) });
+      });
+    }, true);
+  }
+
+  const noInlineCodeKey = new PluginKey('no-inline-code');
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function installCodeBlockPlugin(milkCtx: any) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = milkCtx.get(editorViewCtx);
+    const inlineCodeType = inlineCodeSchema.type(milkCtx);
+    const codeBlockType = codeBlockSchema.type(milkCtx);
+
+    const plugin = new Plugin({
+      key: noInlineCodeKey,
+      appendTransaction(_trs, _old, newState) {
+        // Find paragraphs that contain inline code marks
+        const paraRanges: Array<{ start: number; end: number; node: typeof newState.doc }> = [];
+        newState.doc.descendants((node, pos) => {
+          if (node.type.name !== 'paragraph') return;
+          let hasInlineCode = false;
+          node.content.forEach((child) => {
+            if (child.isText && child.marks.some((m) => m.type === inlineCodeType)) hasInlineCode = true;
+          });
+          if (hasInlineCode) paraRanges.push({ start: pos, end: pos + node.nodeSize, node } as any);
+        });
+        if (paraRanges.length === 0) return null;
+
+        let tr = newState.tr;
+        // Process end-to-start so positions stay valid
+        for (let i = paraRanges.length - 1; i >= 0; i--) {
+          const { start, end, node } = paraRanges[i] as any;
+          const replacement: any[] = [];
+          let pendingText = '';
+
+          (node as any).content.forEach((child: any) => {
+            if (!child.isText) return;
+            const isCode = child.marks.some((m: any) => m.type === inlineCodeType);
+            if (isCode) {
+              if (pendingText.trim()) {
+                replacement.push(newState.schema.nodes.paragraph.create({}, newState.schema.text(pendingText)));
+                pendingText = '';
+              }
+              if (child.text) replacement.push(codeBlockType.create({}, newState.schema.text(child.text)));
+            } else {
+              pendingText += child.text ?? '';
+            }
+          });
+          if (pendingText.trim()) replacement.push(newState.schema.nodes.paragraph.create({}, newState.schema.text(pendingText)));
+
+          if (replacement.length) tr = tr.replaceWith(start, end, replacement);
+        }
+        return tr;
+      },
+      props: {
+        decorations(state) {
+          const decos: Decoration[] = [];
+          state.doc.descendants((node, pos) => {
+            if (node.type === codeBlockType && !node.textContent.includes('\n')) {
+              decos.push(Decoration.node(pos, pos + node.nodeSize, { class: 'single-line' }));
+            }
+          });
+          return DecorationSet.create(state.doc, decos);
+        }
+      }
+    });
+
+    view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
+  }
+
+  function attachCodeCopyButtons(pm: HTMLElement) {
+    // One shared floating button for both block and inline code
+    const floatBtn = makeCopyBtn(() => currentTarget?.textContent ?? '');
+    floatBtn.classList.add('float');
+    document.body.appendChild(floatBtn);
+
+    let currentTarget: HTMLElement | null = null;
+
+    function show(target: HTMLElement, refEl: HTMLElement) {
+      currentTarget = target;
+      const rect = refEl.getBoundingClientRect();
+      floatBtn.style.top = `${rect.top + 8}px`;
+      floatBtn.style.left = `${rect.right - 34}px`;
+      floatBtn.classList.add('visible');
+    }
+    function hide(e: MouseEvent) {
+      if ((e.relatedTarget as HTMLElement) === floatBtn) return;
+      floatBtn.classList.remove('visible');
+      currentTarget = null;
+    }
+
+    pm.addEventListener('mouseover', (e) => {
+      const pre = (e.target as HTMLElement).closest('pre');
+      if (pre instanceof HTMLElement) { show(pre.querySelector('code') ?? pre, pre); return; }
+      const code = (e.target as HTMLElement).closest('code');
+      if (code instanceof HTMLElement) {
+        const r = code.getBoundingClientRect();
+        currentTarget = code;
+        floatBtn.style.top = `${r.top + r.height / 2}px`;
+        floatBtn.style.left = `${r.right + 6}px`;
+        floatBtn.classList.add('visible');
+      }
+    });
+    pm.addEventListener('mouseout', hide);
+    floatBtn.addEventListener('mouseleave', hide);
+  }
+
   function initNotesEditor(el: HTMLElement) {
     if (!document.getElementById('mk-h-fix')) {
       const s = document.createElement('style');
@@ -216,7 +373,7 @@
         [CrepeFeature.TopBar]: false,
         [CrepeFeature.Latex]: false,
         [CrepeFeature.Table]: false,
-        [CrepeFeature.BlockEdit]: false,
+        [CrepeFeature.BlockEdit]: true,
         [CrepeFeature.CodeMirror]: false,
         [CrepeFeature.LinkTooltip]: false,
       },
@@ -230,13 +387,20 @@
     void c.create().then(() => {
       if (!destroyed) {
         instance = c;
+        notesEditorInstance = c;
         const pm = el.querySelector('.ProseMirror');
-        if (pm instanceof HTMLElement) pm.style.paddingTop = '0';
+        if (pm instanceof HTMLElement) {
+          pm.style.paddingTop = '0';
+          attachCodeCopyButtons(pm);
+        }
+        patchToolbarCodeButton(c, el);
+        c.editor.action((ctx) => { installCodeBlockPlugin(ctx); });
       } else void c.destroy();
     });
     return {
       destroy() {
         destroyed = true;
+        if (notesEditorInstance === instance) notesEditorInstance = null;
         void instance?.destroy();
         instance = null;
       },
@@ -260,6 +424,12 @@
     notesOpenId = null;
   }
 
+  function clearNotesContent() {
+    notesContent = '';
+    notesEditorInstance?.editor.action(replaceAll(''));
+    scheduleNotesSave();
+  }
+
   // ── Formatting helpers ────────────────────────────────────────────────────
   function priorityColor(p: string) {
     return p === 'high' ? '#f87171' : p === 'medium' ? '#fbbf24' : '#6b7280';
@@ -268,6 +438,22 @@
   function isOverdue(due: string | null): boolean {
     if (!due) return false;
     return new Date(due) < new Date(new Date().toDateString());
+  }
+
+  function fmtRelativeDue(due: string | null): string {
+    if (!due) return '';
+    const today = new Date(new Date().toDateString());
+    const target = new Date(due);
+    const days = Math.round((target.getTime() - today.getTime()) / 86400000);
+    if (days === 0) return 'today';
+    if (days === 1) return 'tomorrow';
+    if (days === -1) return 'yesterday';
+    if (days < 0) return `${Math.abs(days)}d ago`;
+    if (days < 7) return `in ${days}d`;
+    const weeks = Math.floor(days / 7);
+    if (days < 28) return `in ${weeks}w`;
+    const months = Math.floor(days / 30);
+    return `in ${months}mo`;
   }
 
   function fmtDate(iso: string | null): string {
@@ -341,6 +527,17 @@
       <p class="subtitle">{filtered.length} of {$todos.length} tasks</p>
     </div>
     <div class="header-actions">
+      {#if $activeTimers.size > 0}
+        <button
+          class="focus-toggle {focusMode ? 'active' : ''}"
+          onclick={() => (focusMode = !focusMode)}
+          title="Focus mode"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M3 9V5a2 2 0 0 1 2-2h4M3 15v4a2 2 0 0 0 2 2h4M21 9V5a2 2 0 0 0-2-2h-4M21 15v4a2 2 0 0 1-2 2h-4"/></svg>
+          Focus
+          <span class="focus-pip"></span>
+        </button>
+      {/if}
       <button
         class="filter-toggle {showFilters ? 'active' : ''}"
         onclick={toggleFilters}
@@ -409,26 +606,15 @@
     </div>
   {/if}
 
-  <!-- Annotation hint -->
-  <div class="annotation-hint">
-    Markdown syntax: <code>- [ ] Title #tag @YYYY-MM-DD !high</code> — write tasks in Docs and they sync here.
-  </div>
-
-  <!-- Task list -->
-  <div class="task-list">
-    {#if filtered.length === 0}
-      <div class="empty">No tasks match the current filters.</div>
-    {:else}
-      {#each filtered as todo (todo.id)}
-        {@const isTimerActive = activeTimers.has(todo.id)}
-        {@const timerStartMs = activeTimers.get(todo.id)}
+  {#snippet taskCard(todo: import('$lib/types').Todo)}
+        {@const isTimerActive = $activeTimers.has(todo.id)}
+        {@const timerStartMs = $activeTimers.get(todo.id)}
         {@const sessions = todo.work_sessions ?? []}
         {@const totalMs = totalSessionMs(sessions)}
         {@const isSelected = selectedIds.has(todo.id)}
 
         <div class="task-card {todo.done ? 'done' : ''} {isTimerActive ? 'timer-active' : ''} {isSelected ? 'selected' : ''} {notesOpenId === todo.id ? 'notes-open' : ''}">
           {#if editId === todo.id}
-            <!-- Inline edit -->
             <div class="edit-form">
               <input class="input" bind:value={editTitle} onkeydown={(e) => e.key === 'Enter' && saveEdit(todo)} />
               <div class="form-row">
@@ -470,7 +656,9 @@
 
               <div class="task-meta">
                 {#if todo.due_date}
-                  <span class="due-chip {isOverdue(todo.due_date) && !todo.done ? 'overdue' : ''}">{todo.due_date}</span>
+                  <span class="due-chip {isOverdue(todo.due_date) && !todo.done ? 'overdue' : ''}" title={todo.due_date}>
+                    {fmtRelativeDue(todo.due_date)}
+                  </span>
                 {/if}
                 {#if todo.started_at}
                   <span class="time-chip started" title="Started {fmtDateTime(todo.started_at)}">▶ {fmtDate(todo.started_at)}</span>
@@ -493,7 +681,6 @@
           {/if}
         </div>
 
-        <!-- Work sessions expanded view -->
         {#if expandedSessions === todo.id && sessions.length > 0}
           <div class="sessions-panel">
             <div class="sessions-title">Work sessions</div>
@@ -508,7 +695,6 @@
           </div>
         {/if}
 
-        <!-- Inline notes panel -->
         {#if notesOpenId === todo.id}
           <div class="notes-panel">
             <div class="notes-panel-header">
@@ -516,16 +702,53 @@
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                 Notes
               </span>
-              <button class="notes-close-btn" onclick={closeNotes} title="Close notes">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
+              <div style="display:flex;gap:4px;align-items:center;">
+                <button class="notes-close-btn" onclick={clearNotesContent} title="Clear notes">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                </button>
+                <button class="notes-close-btn" onclick={closeNotes} title="Close notes">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
             </div>
             <div class="notes-editor-wrap" use:initNotesEditor></div>
           </div>
         {/if}
+  {/snippet}
+
+  {#if !focusMode}
+  <div class="annotation-hint">
+    Markdown syntax: <code>- [ ] Title #tag @YYYY-MM-DD !high</code> — write tasks in Docs and they sync here.
+  </div>
+  {/if}
+
+  {#if focusMode && focusTodo}
+    <div class="focus-view">
+      {@render taskCard(focusTodo)}
+    </div>
+  {:else}
+  <div class="task-list">
+    {#if filtered.length === 0}
+      <div class="empty">No tasks match the current filters.</div>
+    {:else}
+      {#if pendingTodos.length === 0}
+        <div class="empty">All tasks completed.</div>
+      {/if}
+      {#each pendingTodos as todo (todo.id)}
+        {@render taskCard(todo)}
       {/each}
+
+      {#if doneTodos.length > 0}
+        <div class="section-divider">
+          <span>Completed · {doneTodos.length}</span>
+        </div>
+        {#each doneTodos as todo (todo.id)}
+          {@render taskCard(todo)}
+        {/each}
+      {/if}
     {/if}
   </div>
+  {/if}
 
   <!-- Selection action bar -->
   {#if selectedIds.size > 0}
@@ -536,44 +759,48 @@
         <button class="sel-btn danger" onclick={deleteSelected}>Confirm</button>
         <button class="sel-btn ghost" onclick={() => (confirmDelete = false)}>Cancel</button>
       {:else}
-        <span class="sel-count">{selectedIds.size} selected</span>
-        <button class="sel-btn ghost icon-only" onclick={() => { selectedIds = new Set(); }} title="Clear selection">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-        <div class="sel-spacer"></div>
-        {#if selTodo}
-          {#if activeTimers.has(selTodo.id)}
-            <button class="sel-btn timer-stop" onclick={() => stopTimer(selTodo!)} title="Stop timer">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
-              Stop
+        <div class="sel-top-row">
+          <span class="sel-count">{selectedIds.size} selected</span>
+          <button class="sel-btn ghost icon-only" onclick={() => { selectedIds = new Set(); }} title="Clear selection">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <div class="sel-spacer"></div>
+          {#if selTodo}
+            <button class="sel-btn" onclick={() => startEdit(selTodo!)} title="Edit">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              Edit
             </button>
-          {:else}
-            <button class="sel-btn timer-play" onclick={() => startTimer(selTodo!)} title="Start timer">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-              Play
+            <button class="sel-btn" onclick={() => copyMarkdown(selTodo!)} title="Copy markdown">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copy
+            </button>
+            <button
+              class="sel-btn {notesOpenId === selTodo.id ? 'notes-active' : ''}"
+              onclick={() => notesOpenId === selTodo!.id ? closeNotes() : openNotes(selTodo!)}
+              title="{notesOpenId === selTodo.id ? 'Close notes' : (selTodo.notes ? 'Edit notes' : 'Add notes')}"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              Notes
             </button>
           {/if}
-          <button class="sel-btn" onclick={() => startEdit(selTodo!)} title="Edit">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            Edit
+          <button class="sel-btn danger" onclick={() => (confirmDelete = true)} title="Delete selected">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+            Delete
           </button>
-          <button class="sel-btn" onclick={() => copyMarkdown(selTodo!)} title="Copy markdown">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-            Copy
-          </button>
-          <button
-            class="sel-btn {notesOpenId === selTodo.id ? 'notes-active' : ''}"
-            onclick={() => notesOpenId === selTodo!.id ? closeNotes() : openNotes(selTodo!)}
-            title="{notesOpenId === selTodo.id ? 'Close notes' : (selTodo.notes ? 'Edit notes' : 'Add notes')}"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-            {notesOpenId === selTodo.id ? 'Notes ✓' : (selTodo.notes ? 'Notes' : 'Notes')}
-          </button>
+        </div>
+        {#if selTodo}
+          {#if $activeTimers.has(selTodo.id)}
+            <button class="play-btn stop" onclick={() => stopTimer(selTodo!)} title="Stop timer">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="3"/></svg>
+              <span class="play-btn-time">{formatElapsed($activeTimers.get(selTodo.id)!)}</span>
+            </button>
+          {:else}
+            <button class="play-btn" onclick={() => startTimer(selTodo!)} title="Start timer">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Start timer
+            </button>
+          {/if}
         {/if}
-        <button class="sel-btn danger" onclick={() => (confirmDelete = true)} title="Delete selected">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
-          Delete
-        </button>
       {/if}
     </div>
   {/if}
@@ -667,6 +894,15 @@
   .task-list { display: flex; flex-direction: column; gap: 4px; }
   .empty { color: #475569; font-size: 0.875rem; padding: 20px 0; text-align: center; }
 
+  .section-divider {
+    display: flex; align-items: center; gap: 10px;
+    margin: 12px 0 4px; color: #475569; font-size: 0.72rem;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em;
+  }
+  .section-divider::before, .section-divider::after {
+    content: ''; flex: 1; height: 1px; background: #1e1e2e;
+  }
+
   .task-card {
     background: #13131a; border: 1px solid #1e1e2e; border-radius: 10px;
     padding: 10px 14px; display: flex; align-items: flex-start; gap: 12px;
@@ -729,14 +965,37 @@
   .session-dur { color: #a78bfa; white-space: nowrap; }
   .sessions-total { font-size: 0.75rem; color: #64748b; padding-top: 4px; border-top: 1px solid #1e1e2e; margin-top: 2px; }
 
+  /* Focus mode toggle */
+  .focus-toggle {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px; border-radius: 10px; border: 1px solid #2d2d3d;
+    background: transparent; color: #9ca3af; font-size: 0.78rem; font-weight: 500;
+    cursor: pointer; transition: all 0.15s; position: relative;
+  }
+  .focus-toggle:hover { border-color: #6366f1; color: #a5b4fc; background: #1e1e2e; }
+  .focus-toggle.active { border-color: #6366f1; color: #818cf8; background: #1e1e3a; }
+  .focus-pip {
+    width: 6px; height: 6px; border-radius: 50%; background: #f87171;
+    animation: pip-pulse 1.5s ease-in-out infinite;
+  }
+  .focus-toggle.active .focus-pip { background: #34d399; }
+  @keyframes pip-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  /* Focus view */
+  .focus-view {
+    flex: 1; display: flex; flex-direction: column; gap: 0;
+    padding: 0; overflow-y: auto;
+  }
+
   /* Selection bar */
   .selection-bar {
     position: sticky; bottom: 0;
     background: #1a1a2e; border: 1px solid #6366f1; border-radius: 14px;
-    padding: 10px 14px; display: flex; align-items: center; gap: 6px;
+    padding: 10px 14px; display: flex; flex-direction: column; gap: 8px;
     box-shadow: 0 -4px 24px rgba(99, 102, 241, 0.15);
     margin-top: auto;
   }
+  .sel-top-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .sel-count { font-size: 0.85rem; color: #a5b4fc; font-weight: 600; white-space: nowrap; }
   .sel-spacer { flex: 1; }
   .sel-btn {
@@ -752,18 +1011,27 @@
   .sel-btn.icon-only { padding: 6px 8px; }
   .sel-btn.danger { color: #f87171; border-color: #3a1414; }
   .sel-btn.danger:hover { background: #2a0e0e; border-color: #f87171; }
-  .sel-btn.timer-play { color: #818cf8; border-color: #1e1e3a; }
-  .sel-btn.timer-play:hover { background: #1e1e3a; border-color: #6366f1; }
-  .sel-btn.timer-stop { color: #f87171; border-color: #3a1414; }
-  .sel-btn.timer-stop:hover { background: #2a0e0e; border-color: #f87171; }
+
+  /* Big play / stop button */
+  .play-btn {
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 14px 20px; border-radius: 10px; border: none;
+    background: #6366f1; color: #fff;
+    font-size: 1rem; font-weight: 600; cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+    letter-spacing: 0.01em;
+  }
+  .play-btn:hover { background: #4f46e5; }
+  .play-btn:active { transform: scale(0.98); }
+  .play-btn.stop { background: #3a1414; color: #f87171; border: 1px solid #7f1d1d; }
+  .play-btn.stop:hover { background: #4a1a1a; }
+  .play-btn-time { font-family: monospace; font-size: 1.1rem; letter-spacing: 0.05em; font-variant-numeric: tabular-nums; }
 
   @media (max-width: 600px) {
     .tasks { padding: 16px 16px 12px; }
     .form-row { flex-direction: column; }
-    .selection-bar { flex-wrap: wrap; row-gap: 6px; border-radius: 10px; }
-    .sel-spacer { display: none; }
+    .selection-bar { border-radius: 10px; }
     .sel-btn { padding: 6px 10px; font-size: 0.78rem; flex-shrink: 0; }
-    .sel-count { width: 100%; }
   }
 
   /* Notes indicator on task card */
@@ -810,6 +1078,7 @@
     color: #64748b; cursor: pointer; transition: all 0.12s; margin-left: 2px;
   }
   .notes-close-btn:hover { border-color: #3a1414; color: #f87171; background: #2a0e0e; }
+  .notes-clear-btn:hover { border-color: #3a1414; color: #f87171; background: #2a0e0e; }
 
   /* Notes Milkdown editor */
   .notes-editor-wrap { min-height: 140px; }
@@ -821,8 +1090,52 @@
     outline: none;
     overflow-wrap: break-word;
     word-break: break-word;
+    caret-color: #818cf8;
   }
   :global(.notes-editor-wrap .milkdown) { position: relative; }
+
+  /* Block code */
+  :global(.notes-editor-wrap .ProseMirror pre) {
+    position: relative;
+    background: #0d0d14;
+    border: 1px solid #2d2d3d;
+    border-left: 3px solid #6366f1;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 6px 0;
+    overflow-x: auto;
+  }
+  /* Single-line code blocks get tighter spacing */
+  :global(.notes-editor-wrap .ProseMirror pre.single-line) {
+    padding: 5px 12px;
+    margin: 3px 0;
+  }
+  :global(.notes-editor-wrap .ProseMirror pre code) {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.82rem;
+    line-height: 1.7;
+    color: #cbd5e1;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
+  :global(.code-copy-btn) {
+    position: fixed;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    border: 1px solid #2d2d3d;
+    background: #1a1a2e;
+    color: #6b7280;
+    cursor: pointer;
+    z-index: 9999;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  :global(.code-copy-btn.visible) { display: flex; }
+  :global(.code-copy-btn:hover) { background: #2d2d4e; border-color: #6366f1; color: #e2e8f0; }
 
   /* Notes button active state in selection bar */
   .sel-btn.notes-active { color: #818cf8; border-color: #6366f1; background: #1e1e3a; }

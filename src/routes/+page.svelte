@@ -13,6 +13,10 @@
   let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
   let loading = $state(true);
   let sidebarCollapsed = $state(localStorage.getItem('todoto-sidebar-collapsed') === 'true');
+  let drawerOpen = $state(false);
+
+  function closeDrawer() { drawerOpen = false; }
+  function navTo(id: typeof $activeView) { activeView.set(id); closeDrawer(); }
 
   $effect(() => {
     localStorage.setItem('todoto-sidebar-collapsed', String(sidebarCollapsed));
@@ -180,21 +184,47 @@
     {/if}
   </main>
 
-  <!-- Mobile bottom nav -->
-  <nav class="bottom-nav">
-    {#each navItems as item}
-      <button
-        class="bottom-nav-item {$activeView === item.id ? 'active' : ''}"
-        onclick={() => activeView.set(item.id)}
-      >
-        {@html item.svg()}
-        <span>{item.label}</span>
-      </button>
-    {/each}
-    <button class="bottom-nav-item" onclick={() => showSettings.set(true)}>
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      <span>Settings</span>
+  <!-- Mobile top bar (hamburger) -->
+  <header class="mobile-header">
+    <button class="hamburger" onclick={() => (drawerOpen = true)} aria-label="Open menu">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="3" y1="6"  x2="21" y2="6"/>
+        <line x1="3" y1="12" x2="21" y2="12"/>
+        <line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
     </button>
+    <span class="mobile-title">{navItems.find(n => n.id === $activeView)?.label ?? 'todoto'}</span>
+    <SyncIndicator onSync={triggerSync} collapsed={true} />
+  </header>
+
+  <!-- Mobile drawer backdrop -->
+  {#if drawerOpen}
+    <div class="drawer-backdrop" onclick={closeDrawer} aria-hidden="true"></div>
+  {/if}
+
+  <!-- Mobile drawer -->
+  <nav class="drawer {drawerOpen ? 'open' : ''}">
+    <div class="drawer-header">
+      <img src="/logo.png" alt="todoto" class="logo-img" />
+      <span class="logo-text">todoto</span>
+      <button class="drawer-close" onclick={closeDrawer} aria-label="Close menu">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="drawer-nav">
+      {#each navItems as item}
+        <button class="drawer-item {$activeView === item.id ? 'active' : ''}" onclick={() => navTo(item.id)}>
+          {@html item.svg()}
+          <span>{item.label}</span>
+        </button>
+      {/each}
+    </div>
+    <div class="drawer-footer">
+      <button class="drawer-item" onclick={() => { showSettings.set(true); closeDrawer(); }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>Settings</span>
+      </button>
+    </div>
   </nav>
 
   {#if $showSettings}
@@ -295,23 +325,74 @@
 
   .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); }
 
-  .bottom-nav {
-    display: none; position: fixed; bottom: 0; left: 0; right: 0;
-    background: var(--surface); border-top: 1px solid var(--border);
-    padding: 6px 0 max(8px, env(safe-area-inset-bottom)); z-index: 100;
+  /* ── Mobile top bar ──────────────────────────────────────────────────────── */
+  .mobile-header {
+    display: none; align-items: center; gap: 12px;
+    padding: 0 16px; height: 52px; flex-shrink: 0;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    position: relative; z-index: 10;
   }
-  .bottom-nav-item {
-    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
-    padding: 4px; border: none; background: transparent;
-    color: var(--text-5); font-size: 0.68rem; cursor: pointer; transition: color 0.15s;
+  .hamburger {
+    width: 36px; height: 36px; border-radius: 8px; border: none;
+    background: transparent; color: var(--text-3); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.12s;
   }
-  .bottom-nav-item.active { color: var(--accent); }
-  .bottom-nav-item span { font-weight: 500; }
+  .hamburger:hover { background: var(--border); }
+  .mobile-title {
+    flex: 1; font-size: 1rem; font-weight: 600; color: var(--text-2);
+  }
+
+  /* ── Drawer backdrop ─────────────────────────────────────────────────────── */
+  .drawer-backdrop {
+    display: none; position: fixed; inset: 0; z-index: 200;
+    background: rgba(0,0,0,0.45);
+    animation: fade-in 0.2s ease;
+  }
+
+  /* ── Slide-in drawer ─────────────────────────────────────────────────────── */
+  .drawer {
+    display: none; position: fixed; top: 0; left: 0; bottom: 0;
+    width: 260px; z-index: 201;
+    background: var(--surface); border-right: 1px solid var(--border);
+    flex-direction: column; padding: 20px 12px;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+  }
+  .drawer.open { transform: translateX(0); }
+
+  .drawer-header {
+    display: flex; align-items: center; gap: 8px;
+    padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 8px;
+  }
+  .drawer-close {
+    margin-left: auto; width: 28px; height: 28px; border-radius: 6px; border: none;
+    background: transparent; color: var(--text-5); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .drawer-close:hover { background: var(--border); color: var(--text-2); }
+
+  .drawer-nav { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+  .drawer-footer { padding-top: 12px; border-top: 1px solid var(--border); }
+
+  .drawer-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 12px; border-radius: 10px; border: none;
+    background: transparent; color: var(--text-4);
+    font-size: 0.9rem; font-weight: 500; cursor: pointer;
+    transition: background 0.15s, color 0.15s; width: 100%; text-align: left;
+  }
+  .drawer-item:hover { background: var(--border); color: var(--text-2); }
+  .drawer-item.active { background: var(--accent-bg); color: var(--accent); }
+
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 
   @media (max-width: 600px) {
     .sidebar { display: none; }
-    .bottom-nav { display: flex; }
-    .main { padding-bottom: 68px; }
+    .mobile-header { display: flex; }
+    .drawer-backdrop { display: block; }
+    .drawer { display: flex; }
+    .main { padding-top: 0; }
   }
 
   .splash {

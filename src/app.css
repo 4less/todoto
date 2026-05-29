@@ -93,3 +93,24 @@
   --red-border-2: #f87171;
   --red-deep:     #ef4444;
 }
+
+/* Caption textarea — replaces Milkdown's single-line <input> for multiline captions */
+.notes-editor-wrap textarea.caption-input {
+  display: block;
+  width: 100%;
+  text-align: center;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  margin: 4px auto;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  line-height: 1.5;
+  word-break: break-word;
+  box-sizing: border-box;
+  min-height: 1.5em;
+}

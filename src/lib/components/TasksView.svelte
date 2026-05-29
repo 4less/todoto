@@ -501,16 +501,73 @@
     async function handleNotesCtrlV(e: KeyboardEvent) {
       if (!((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v')) return;
       if (!notesOpenId) return;
+      // Caption textarea handles its own paste natively.
+      if (document.activeElement?.classList.contains('caption-input')) return;
+
+      // Prevent default NOW (synchronously) so the browser's paste event
+      // doesn't fire and cause ProseMirror to also insert content.
+      e.preventDefault();
+      e.stopPropagation();
+
       try {
         const handled = await insertImageFromClipboard();
-        if (handled) {
-          e.preventDefault();
-          e.stopPropagation();
+        if (!handled) {
+          // No image — fall back to plain-text paste via clipboard API.
+          const text = await navigator.clipboard.readText().catch(() => '');
+          if (text) {
+            c.editor.action((ctx) => {
+              const view = ctx.get(editorViewCtx);
+              view.dispatch(view.state.tr.insertText(text));
+            });
+          }
         }
       } catch (err) {
-        console.error('Clipboard image read failed:', err);
+        console.error('Clipboard paste failed:', err);
       }
     }
+
+    // Replace Milkdown's single-line caption <input> with an auto-resizing <textarea>.
+    function upgradeCaptionInput(inp: HTMLInputElement) {
+      inp.dataset.upgraded = '1';
+      const ta = document.createElement('textarea');
+      ta.className = inp.className;
+      ta.placeholder = inp.placeholder;
+      ta.value = inp.value;
+
+      const resize = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+
+      // Stop ProseMirror from stealing focus or intercepting keys while editing caption.
+      // stopImmediatePropagation covers both other listeners on the same element and
+      // bubble-phase listeners on ancestors. Capture-phase listeners on ancestors still
+      // fire, but those (handleNotesCtrlV) don't preventDefault for text input.
+      const block = (e: Event) => e.stopImmediatePropagation();
+      for (const type of ['mousedown', 'mouseup', 'mousemove', 'pointerdown', 'pointerup', 'pointermove', 'click', 'keydown', 'keyup', 'keypress', 'beforeinput', 'compositionstart', 'compositionend', 'paste', 'cut', 'copy']) {
+        ta.addEventListener(type, block);
+      }
+      ta.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopImmediatePropagation(); });
+
+      // Forward value to hidden input so Milkdown's Vue state stays in sync.
+      // Dispatch as non-bubbling so the forwarded event doesn't loop back to ProseMirror.
+      ta.addEventListener('input', () => {
+        inp.value = ta.value;
+        inp.dispatchEvent(new Event('input', { bubbles: false }));
+        resize();
+      });
+      ta.addEventListener('blur', () => {
+        inp.value = ta.value;
+        inp.dispatchEvent(new Event('blur', { bubbles: false }));
+      });
+
+      inp.style.display = 'none';
+      inp.insertAdjacentElement('afterend', ta);
+      resize();
+    }
+
+    function upgradeCaptions(root: HTMLElement) {
+      root.querySelectorAll<HTMLInputElement>('input.caption-input:not([data-upgraded])').forEach(upgradeCaptionInput);
+    }
+
+    const captionObs = new MutationObserver(() => upgradeCaptions(el));
 
     void c.create().then(() => {
       if (!destroyed) {
@@ -524,11 +581,14 @@
         patchToolbarCodeButton(c, el);
         c.editor.action((ctx) => { installCodeBlockPlugin(ctx); });
         el.addEventListener('keydown', handleNotesCtrlV, true);
+        captionObs.observe(el, { childList: true, subtree: true });
+        upgradeCaptions(el);
       } else void c.destroy();
     });
     return {
       destroy() {
         destroyed = true;
+        captionObs.disconnect();
         el.removeEventListener('keydown', handleNotesHeadingShortcut);
         el.removeEventListener('keydown', handleNotesCtrlV, true);
         if (notesEditorInstance === instance) notesEditorInstance = null;
@@ -1478,4 +1538,5 @@
   /* Notes button active state in selection bar */
   .sel-btn.notes-active { color: var(--accent-lt); border-color: var(--accent); background: var(--accent-bg); }
   .sel-btn.notes-active:hover { background: var(--accent-bg-2); }
+
 </style>

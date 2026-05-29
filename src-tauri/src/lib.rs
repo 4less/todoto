@@ -50,6 +50,8 @@ pub struct Todo {
     pub work_sessions: Vec<WorkSession>,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default)]
+    pub note_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -149,6 +151,10 @@ fn save_settings_to_path(settings: &Settings, path: &Path) -> Result<(), String>
 
 // ── Todos storage ─────────────────────────────────────────────────────────────
 
+fn task_note_path(repo_base: &Path, todo_id: &str) -> PathBuf {
+    repo_base.join("task-notes").join(format!("{todo_id}.md"))
+}
+
 fn todos_path(settings: &Settings) -> Option<PathBuf> {
     if settings.repo_path.is_empty() {
         None
@@ -159,7 +165,7 @@ fn todos_path(settings: &Settings) -> Option<PathBuf> {
 
 fn load_todos(settings: &Settings) -> Vec<Todo> {
     let Some(path) = todos_path(settings) else { return vec![] };
-    if path.exists() {
+    let todos = if path.exists() {
         fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<TodoData>(&s).ok())
@@ -176,13 +182,46 @@ fn load_todos(settings: &Settings) -> Vec<Todo> {
         } else {
             vec![]
         }
-    }
+    };
+    // Populate notes content from separate .md files (notes field is not in JSON)
+    let repo_base = PathBuf::from(&settings.repo_path);
+    todos.into_iter().map(|mut t| {
+        if t.notes.is_none() {
+            if let Some(ref rel_path) = t.note_path {
+                t.notes = fs::read_to_string(repo_base.join(rel_path)).ok();
+            }
+        }
+        t
+    }).collect()
 }
 
 fn save_todos(settings: &Settings, todos: &[Todo]) -> Result<(), String> {
     let path = todos_path(settings).ok_or("No repo path configured")?;
     fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-    let data = TodoData { todos: todos.to_vec(), version: 1 };
+    let repo_base = PathBuf::from(&settings.repo_path);
+    // Serialize todos, migrating any legacy inline notes to files and stripping
+    // the `notes` field from JSON (it lives in separate .md files).
+    let todo_values: Vec<serde_json::Value> = todos.iter().map(|todo| {
+        let mut todo = todo.clone();
+        if todo.notes.is_some() && todo.note_path.is_none() && !repo_base.as_os_str().is_empty() {
+            if let Some(content) = &todo.notes {
+                if !content.trim().is_empty() {
+                    let note_file = task_note_path(&repo_base, &todo.id);
+                    if let Some(parent) = note_file.parent() {
+                        if fs::create_dir_all(parent).is_ok() && fs::write(&note_file, content).is_ok() {
+                            if let Ok(rel) = note_file.strip_prefix(&repo_base) {
+                                todo.note_path = Some(rel.to_string_lossy().replace('\\', "/"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut v = serde_json::to_value(&todo).unwrap_or(serde_json::Value::Null);
+        if let Some(obj) = v.as_object_mut() { obj.remove("notes"); }
+        v
+    }).collect();
+    let data = serde_json::json!({ "todos": todo_values, "version": 1 });
     let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())
 }
@@ -334,9 +373,9 @@ fn scan_dir_for_notes(dir: &Path, repo_base: &Path, notes: &mut Vec<Note>) {
         let path = entry.path();
         if path.is_dir() {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            // Skip hidden dirs and the global image store at the repo root
             if name.starts_with('.') { continue; }
-            if path.parent() == Some(repo_base) && name == "img" { continue; }
+            // Skip the global image store and task-notes dir at the repo root
+            if path.parent() == Some(repo_base) && (name == "img" || name == "task-notes") { continue; }
             scan_dir_for_notes(&path, repo_base, notes);
         } else if path.extension().map(|e| e == "md").unwrap_or(false) {
             if let Some(note) = parse_note_file(&path, repo_base) {
@@ -360,7 +399,7 @@ fn scan_folders_in(dir: &Path, repo_base: &Path, out: &mut Vec<String>) {
         if !path.is_dir() { continue; }
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         if name.starts_with('.') { continue; }
-        if path.parent() == Some(repo_base) && name == "img" { continue; }
+        if path.parent() == Some(repo_base) && (name == "img" || name == "task-notes") { continue; }
         if let Ok(rel) = path.strip_prefix(repo_base) {
             let rel_str = rel.to_string_lossy().replace('\\', "/");
             if !rel_str.is_empty() {
@@ -834,6 +873,7 @@ async fn do_sync(settings: &Settings) -> SyncResult {
     };
     let manifest = load_manifest(&repo_path);
     let local_files = scan_local_files(&repo_path);
+    let local_binary = scan_local_binary_files(&repo_path);
 
     let mut new_manifest: HashMap<String, String> = HashMap::new();
     let mut errors: Vec<String> = Vec::new();
@@ -843,14 +883,14 @@ async fn do_sync(settings: &Settings) -> SyncResult {
 
     // ── Delete from GitHub: in manifest but no longer present locally ─────────
     for path in manifest.files.keys() {
-        if !local_files.contains_key(path) {
+        // A file is still present locally if it exists as text OR as a binary.
+        if !local_files.contains_key(path) && !local_binary.contains_key(path) {
             if let Some(gh_sha) = github_map.get(path) {
                 match gh_delete_file(&client, &owner, &repo, path, gh_sha).await {
                     Ok(()) => deleted_count += 1,
                     Err(e) => errors.push(e),
                 }
             }
-            // Either deleted on GitHub already, or successfully deleted — don't add to new manifest.
         }
     }
 
@@ -942,7 +982,6 @@ async fn do_sync(settings: &Settings) -> SyncResult {
     }
 
     // ── Binary files (images) ─────────────────────────────────────────────────
-    let local_binary = scan_local_binary_files(&repo_path);
 
     for (path, bytes) in &local_binary {
         let local_sha = github_blob_sha(bytes);
@@ -1101,17 +1140,38 @@ fn get_todos(state: State<Mutex<AppState>>) -> Vec<Todo> {
 #[tauri::command]
 fn save_todo(state: State<Mutex<AppState>>, mut todo: Todo) -> Result<Todo, String> {
     let state = state.lock().unwrap();
-    let mut todos = load_todos(&state.settings);
     todo.updated_at = Utc::now();
     if todo.id.is_empty() {
         todo.id = Uuid::new_v4().to_string();
         todo.created_at = Utc::now();
-        todos.push(todo.clone());
-    } else {
-        match todos.iter_mut().find(|t| t.id == todo.id) {
-            Some(existing) => *existing = todo.clone(),
-            None => todos.push(todo.clone()),
+    }
+    // Write or delete the note .md file
+    let repo_base = PathBuf::from(&state.settings.repo_path);
+    if !repo_base.as_os_str().is_empty() {
+        match todo.notes.as_deref() {
+            Some(content) if !content.trim().is_empty() => {
+                let note_file = task_note_path(&repo_base, &todo.id);
+                if let Some(parent) = note_file.parent() {
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                fs::write(&note_file, content).map_err(|e| e.to_string())?;
+                if let Ok(rel) = note_file.strip_prefix(&repo_base) {
+                    todo.note_path = Some(rel.to_string_lossy().replace('\\', "/"));
+                }
+            }
+            _ => {
+                let to_delete = todo.note_path.as_ref()
+                    .map(|p| repo_base.join(p))
+                    .unwrap_or_else(|| task_note_path(&repo_base, &todo.id));
+                let _ = fs::remove_file(to_delete);
+                todo.note_path = None;
+            }
         }
+    }
+    let mut todos = load_todos(&state.settings);
+    match todos.iter_mut().find(|t| t.id == todo.id) {
+        Some(existing) => *existing = todo.clone(),
+        None => todos.push(todo.clone()),
     }
     save_todos(&state.settings, &todos)?;
     Ok(todo)
@@ -1121,6 +1181,13 @@ fn save_todo(state: State<Mutex<AppState>>, mut todo: Todo) -> Result<Todo, Stri
 fn delete_todo(state: State<Mutex<AppState>>, id: String) -> Result<(), String> {
     let state = state.lock().unwrap();
     let mut todos = load_todos(&state.settings);
+    let repo_base = PathBuf::from(&state.settings.repo_path);
+    if let Some(todo) = todos.iter().find(|t| t.id == id) {
+        let note_file = todo.note_path.as_ref()
+            .map(|p| repo_base.join(p))
+            .unwrap_or_else(|| task_note_path(&repo_base, &id));
+        let _ = fs::remove_file(note_file);
+    }
     todos.retain(|t| t.id != id);
     save_todos(&state.settings, &todos)
 }
@@ -1152,6 +1219,50 @@ async fn sync_now(state: State<'_, Mutex<AppState>>) -> Result<SyncResult, Strin
 #[tauri::command]
 fn get_last_sync(state: State<Mutex<AppState>>) -> Option<DateTime<Utc>> {
     state.lock().unwrap().last_sync
+}
+
+// Read an image from the system clipboard and return it as a base64-encoded PNG.
+// Returns None if the clipboard contains no image.
+#[tauri::command]
+fn read_clipboard_image() -> Result<Option<String>, String> {
+    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    match cb.get_image() {
+        Ok(img) => {
+            let mut png: Vec<u8> = Vec::new();
+            let mut enc = png::Encoder::new(std::io::Cursor::new(&mut png), img.width as u32, img.height as u32);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header().map_err(|e| e.to_string())?;
+            w.write_image_data(&img.bytes).map_err(|e| e.to_string())?;
+            drop(w);
+            Ok(Some(B64.encode(&png)))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+#[tauri::command]
+fn save_task_note_image(
+    state: State<Mutex<AppState>>,
+    id: String,
+    data_b64: String,
+    ext: String,
+) -> Result<String, String> {
+    let repo_path = state.lock().unwrap().settings.repo_path.clone();
+    if repo_path.is_empty() { return Err("No repo path configured".to_string()); }
+    let repo_base = Path::new(&repo_path);
+    let img_dir = repo_base.join("task-notes").join("img");
+    fs::create_dir_all(&img_dir).map_err(|e| e.to_string())?;
+    let bytes = B64.decode(data_b64.trim()).map_err(|e| e.to_string())?;
+    let safe_ext = if is_image_extension(&ext) { ext } else { "png".to_string() };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let file_path = img_dir.join(format!("image-{ts}.{safe_ext}"));
+    fs::write(&file_path, &bytes).map_err(|e| e.to_string())?;
+    let rel = file_path.strip_prefix(repo_base).map_err(|e| e.to_string())?;
+    Ok(rel.to_string_lossy().replace('\\', "/"))
 }
 
 #[tauri::command]
@@ -1228,6 +1339,8 @@ pub fn run() {
             save_settings,
             sync_now,
             get_last_sync,
+            read_clipboard_image,
+            save_task_note_image,
             read_file_base64,
             find_asset,
         ])

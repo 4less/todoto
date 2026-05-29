@@ -1,6 +1,21 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Note, Todo, Settings, SyncResult } from './types';
 
+export async function saveTaskNoteImage(id: string, blob: Blob): Promise<string> {
+  // FileReader is the only reliable way to get base64 from large blobs without
+  // O(n²) string concat or call-stack overflow from spread operators.
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+  const dataB64 = dataUrl.split(',')[1];
+  // Derive extension from MIME type (e.g. "image/png" → "png").
+  const ext = (blob.type.split('/')[1] ?? 'png').replace('jpeg', 'jpg');
+  return invoke<string>('save_task_note_image', { id, dataB64, ext });
+}
+
 export const api = {
   getNotes: () => invoke<Note[]>('get_notes'),
   getFolders: () => invoke<string[]>('get_folders'),

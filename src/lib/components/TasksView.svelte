@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { todos, activeTimers } from '$lib/stores';
-  import { api } from '$lib/api';
+  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, settings } from '$lib/stores';
+  import { api, saveTaskNoteImage } from '$lib/api';
+  import { convertFileSrc, invoke } from '@tauri-apps/api/core';
   import type { Todo, WorkSession } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
   import DatePicker from '$lib/components/DatePicker.svelte';
@@ -12,11 +13,7 @@
   import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
   import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
 
-  // ── Filter state ──────────────────────────────────────────────────────────
-  let filterStatus: 'all' | 'pending' | 'done' = $state('all');
-  let filterPriority: '' | 'high' | 'medium' | 'low' = $state('');
-  let filterTag: string = $state('');
-  let searchQ: string = $state('');
+  // ── Filter state (persisted in global stores) ─────────────────────────────
   let showFilters = $state(false);
   let searchInputEl: HTMLInputElement | null = $state(null);
 
@@ -81,11 +78,27 @@
   let filtered = $derived(
     $todos
       .filter((t) => {
-        if (filterStatus === 'pending' && t.done) return false;
-        if (filterStatus === 'done' && !t.done) return false;
-        if (filterPriority && t.priority !== filterPriority) return false;
-        if (filterTag && !t.tags.includes(filterTag)) return false;
-        if (searchQ && !t.title.toLowerCase().includes(searchQ.toLowerCase())) return false;
+        if ($taskFilterStatus === 'pending' && t.done) return false;
+        if ($taskFilterStatus === 'done' && !t.done) return false;
+        if ($taskFilterPriority && t.priority !== $taskFilterPriority) return false;
+        if ($taskFilterTag && !t.tags.includes($taskFilterTag)) return false;
+        if ($taskFilterDuePeriod) {
+          const due = t.due_date ? new Date(t.due_date) : null;
+          const today = new Date(); today.setHours(0, 0, 0, 0);
+          if ($taskFilterDuePeriod === 'overdue') {
+            if (!due || due >= today) return false;
+          } else if ($taskFilterDuePeriod === 'today') {
+            const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+            if (!due || due < today || due >= tomorrow) return false;
+          } else if ($taskFilterDuePeriod === 'week') {
+            const weekEnd = new Date(today); weekEnd.setDate(today.getDate() + 7);
+            if (!due || due < today || due >= weekEnd) return false;
+          } else if ($taskFilterDuePeriod === 'month') {
+            const monthEnd = new Date(today); monthEnd.setDate(today.getDate() + 30);
+            if (!due || due < today || due >= monthEnd) return false;
+          }
+        }
+        if ($taskFilterSearch && !t.title.toLowerCase().includes($taskFilterSearch.toLowerCase())) return false;
         return true;
       })
       .sort((a, b) => {
@@ -99,6 +112,28 @@
 
   let pendingTodos = $derived(filtered.filter((t) => !t.done));
   let doneTodos = $derived(filtered.filter((t) => t.done));
+
+  let ungroupedPending = $derived(
+    $taskFilterGroupByTags.length > 0
+      ? pendingTodos.filter((t) => !$taskFilterGroupByTags.some((gt) => t.tags.includes(gt)))
+      : []
+  );
+
+  const priorityRank: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
+  let sortedGroups = $derived(
+    $taskFilterGroupByTags
+      .map((tag) => ({ tag, todos: pendingTodos.filter((t) => t.tags.includes(tag)) }))
+      .filter((g) => g.todos.length > 0)
+      .sort((a, b) => {
+        const earliest = (ts: typeof pendingTodos) =>
+          ts.reduce((min, t) => t.due_date ? Math.min(min, new Date(t.due_date).getTime()) : min, Infinity);
+        const bestPrio = (ts: typeof pendingTodos) =>
+          ts.reduce((best, t) => Math.min(best, priorityRank[t.priority] ?? 1), 2);
+        const timeDiff = earliest(a.todos) - earliest(b.todos);
+        return timeDiff !== 0 ? timeDiff : bestPrio(a.todos) - bestPrio(b.todos);
+      })
+  );
 
   let selTodo = $derived(
     selectedIds.size === 1 ? $todos.find((t) => selectedIds.has(t.id)) ?? null : null
@@ -206,9 +241,48 @@
   }
 
   // ── Notes ─────────────────────────────────────────────────────────────────
+  // notesContent stores asset:// URLs so the live editor always works.
+  // The note .md file on disk stores repo-relative paths (portable, syncs to GitHub).
+  // Conversion happens once at load (relative→asset://) and once at save (asset://→relative).
+
+  const ASSET_RE = /^(?:asset:\/\/localhost|https?:\/\/asset\.localhost)(\/.*)/;
+
+  function splitUrlTitle(raw: string): [string, string] {
+    const i = raw.search(/\s+["']/);
+    return i >= 0 ? [raw.slice(0, i), raw.slice(i)] : [raw.trim(), ''];
+  }
+
+  // Convert repo-relative image paths → asset:// URLs (used when loading into editor).
+  function makeImagesLoadable(content: string): string {
+    const repoPath = $settings.repo_path;
+    if (!repoPath) return content;
+    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, raw) => {
+      const [src, title] = splitUrlTitle(raw);
+      if (src.startsWith('http') || src.startsWith('data:') || ASSET_RE.test(src)) return match;
+      const abs = src.startsWith('/') ? src : `${repoPath}/${src}`;
+      return `![${alt}](${convertFileSrc(abs)}${title})`;
+    });
+  }
+
+  // Convert asset:// URLs → repo-relative paths (used when saving to file).
+  function stripAssetUrls(content: string): string {
+    const repoPath = $settings.repo_path;
+    if (!repoPath) return content;
+    const prefix = repoPath + '/';
+    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, raw) => {
+      const [src, title] = splitUrlTitle(raw);
+      const m = src.match(ASSET_RE);
+      if (!m) return match;
+      let abs = decodeURIComponent(m[1]);
+      if (abs.startsWith('//')) abs = abs.slice(1);
+      const rel = abs.startsWith(prefix) ? abs.slice(prefix.length) : abs;
+      return `![${alt}](${rel}${title})`;
+    });
+  }
 
   async function persistNotes(todo: Todo) {
-    const updated = await api.saveTodo({ ...todo, notes: notesContent || null });
+    // Save relative paths to the note file so it's portable and syncs cleanly.
+    const updated = await api.saveTodo({ ...todo, notes: stripAssetUrls(notesContent) || null });
     todos.update((ts) => ts.map((t) => (t.id === updated.id ? updated : t)));
   }
 
@@ -365,12 +439,17 @@
     }
     let instance: Crepe | null = null;
     let destroyed = false;
+    const uploadImage = async (file: File) => {
+      if (!notesOpenId) throw new Error('No todo open');
+      const relPath = await saveTaskNoteImage(notesOpenId, file);
+      const repoPath = $settings.repo_path;
+      return repoPath ? convertFileSrc(`${repoPath}/${relPath}`) : relPath;
+    };
     const c = new Crepe({
       root: el,
-      defaultValue: notesContent,
+      defaultValue: notesContent, // already has asset:// URLs (set in openNotes)
       features: {
         [CrepeFeature.AI]: false,
-        [CrepeFeature.ImageBlock]: false,
         [CrepeFeature.TopBar]: false,
         [CrepeFeature.Latex]: false,
         [CrepeFeature.Table]: false,
@@ -378,14 +457,61 @@
         [CrepeFeature.CodeMirror]: false,
         [CrepeFeature.LinkTooltip]: false,
       },
+      featureConfigs: {
+        [CrepeFeature.ImageBlock]: {
+          onUpload: uploadImage,
+          blockOnUpload: uploadImage,
+        },
+      },
     });
     c.on((api) => {
       api.markdownUpdated((_, markdown) => {
+        // Keep asset:// URLs in notesContent so the editor always renders correctly.
+        // stripAssetUrls is only called at save time (persistNotes).
         notesContent = markdown;
         scheduleNotesSave();
       });
     });
     el.addEventListener('keydown', handleNotesHeadingShortcut);
+
+    async function insertImageFromClipboard() {
+      if (!notesOpenId) return false;
+      // Read the clipboard image directly from Rust — bypasses unreliable JS clipboard API
+      const b64 = await invoke<string | null>('read_clipboard_image');
+      if (!b64) return false;
+      const relPath = await invoke<string>('save_task_note_image', {
+        id: notesOpenId, dataB64: b64, ext: 'png',
+      });
+      const repoPath = $settings.repo_path;
+      const assetUrl = repoPath ? convertFileSrc(`${repoPath}/${relPath}`) : relPath;
+      c.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        const nodeType = view.state.schema.nodes['image-block'];
+        if (nodeType) {
+          const node = nodeType.create({ src: assetUrl, caption: '', ratio: 1 });
+          view.dispatch(view.state.tr.replaceSelectionWith(node));
+        }
+      });
+      return true;
+    }
+
+    // Intercept Ctrl+V at keydown so we can check the clipboard via Rust before
+    // the paste event fires. If there's an image we handle it; otherwise we let
+    // the native paste event proceed normally for text.
+    async function handleNotesCtrlV(e: KeyboardEvent) {
+      if (!((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v')) return;
+      if (!notesOpenId) return;
+      try {
+        const handled = await insertImageFromClipboard();
+        if (handled) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      } catch (err) {
+        console.error('Clipboard image read failed:', err);
+      }
+    }
+
     void c.create().then(() => {
       if (!destroyed) {
         instance = c;
@@ -397,12 +523,14 @@
         }
         patchToolbarCodeButton(c, el);
         c.editor.action((ctx) => { installCodeBlockPlugin(ctx); });
+        el.addEventListener('keydown', handleNotesCtrlV, true);
       } else void c.destroy();
     });
     return {
       destroy() {
         destroyed = true;
         el.removeEventListener('keydown', handleNotesHeadingShortcut);
+        el.removeEventListener('keydown', handleNotesCtrlV, true);
         if (notesEditorInstance === instance) notesEditorInstance = null;
         void instance?.destroy();
         instance = null;
@@ -415,7 +543,11 @@
       notesRawMode = true;
     } else {
       notesRawMode = false;
-      notesEditorInstance?.editor.action(replaceAll(notesContent));
+      // makeImagesLoadable is a no-op for asset:// URLs but handles the case
+      // where the user typed relative paths in raw mode.
+      const loadable = makeImagesLoadable(notesContent);
+      notesContent = loadable;
+      notesEditorInstance?.editor.action(replaceAll(loadable));
     }
   }
 
@@ -456,7 +588,8 @@
       if (prev) void persistNotes(prev);
     }
     notesOpenId = todo.id;
-    notesContent = todo.notes ?? '';
+    // Convert relative image paths to asset:// URLs so the editor can display them.
+    notesContent = makeImagesLoadable(todo.notes ?? '');
   }
 
   function closeNotes() {
@@ -620,28 +753,57 @@
   <!-- Filter bar -->
   {#if showFilters}
     <div class="filter-bar">
-      <input class="search-input" placeholder="Search tasks…" bind:value={searchQ} bind:this={searchInputEl} />
+      <input class="search-input" placeholder="Search tasks…" bind:value={$taskFilterSearch} bind:this={searchInputEl} />
       <div class="filter-chips">
         <span class="filter-label">Status:</span>
         {#each ['all', 'pending', 'done'] as s}
-          <button class="chip {filterStatus === s ? 'active' : ''}" onclick={() => (filterStatus = s as typeof filterStatus)}>{s}</button>
+          <button class="chip {$taskFilterStatus === s ? 'active' : ''}" onclick={() => ($taskFilterStatus = s as typeof $taskFilterStatus)}>{s}</button>
         {/each}
       </div>
       <div class="filter-chips">
         <span class="filter-label">Priority:</span>
-        <button class="chip {filterPriority === '' ? 'active' : ''}" onclick={() => (filterPriority = '')}>all</button>
+        <button class="chip {$taskFilterPriority === '' ? 'active' : ''}" onclick={() => ($taskFilterPriority = '')}>all</button>
         {#each ['high', 'medium', 'low'] as p}
-          <button class="chip prio-chip {filterPriority === p ? 'active' : ''}" style="--pc: {priorityColor(p)}"
-            onclick={() => (filterPriority = filterPriority === p ? '' : p as typeof filterPriority)}>{p}</button>
+          <button class="chip prio-chip {$taskFilterPriority === p ? 'active' : ''}" style="--pc: {priorityColor(p)}"
+            onclick={() => ($taskFilterPriority = $taskFilterPriority === p ? '' : p as typeof $taskFilterPriority)}>{p}</button>
         {/each}
       </div>
       {#if allTags.length > 0}
         <div class="filter-chips">
           <span class="filter-label">Tag:</span>
-          <button class="chip {filterTag === '' ? 'active' : ''}" onclick={() => (filterTag = '')}>all</button>
+          <button class="chip {$taskFilterTag === '' ? 'active' : ''}" onclick={() => ($taskFilterTag = '')}>all</button>
           {#each allTags as tag}
-            <button class="chip tag-chip {filterTag === tag ? 'active' : ''}"
-              onclick={() => (filterTag = filterTag === tag ? '' : tag)}>#{tag}</button>
+            <button class="chip tag-chip {$taskFilterTag === tag ? 'active' : ''}"
+              onclick={() => ($taskFilterTag = $taskFilterTag === tag ? '' : tag)}>#{tag}</button>
+          {/each}
+        </div>
+      {/if}
+      <div class="filter-chips">
+        <span class="filter-label">Due:</span>
+        <button class="chip {$taskFilterDuePeriod === '' ? 'active' : ''}" onclick={() => ($taskFilterDuePeriod = '')}>all</button>
+        {#each [['overdue', 'Overdue'], ['today', 'Today'], ['week', 'This week'], ['month', 'This month']] as [val, label]}
+          <button class="chip due-period-chip {$taskFilterDuePeriod === val ? 'active' : ''}"
+            onclick={() => ($taskFilterDuePeriod = $taskFilterDuePeriod === val ? '' : val as typeof $taskFilterDuePeriod)}
+          >{label}</button>
+        {/each}
+      </div>
+      {#if allTags.length > 0}
+        <div class="filter-chips">
+          <span class="filter-label">Group:</span>
+          {#if $taskFilterGroupByTags.length > 0}
+            <button class="chip group-clear-chip" onclick={() => ($taskFilterGroupByTags = [])}>clear</button>
+          {/if}
+          {#each allTags as tag}
+            <button
+              class="chip group-tag-chip {$taskFilterGroupByTags.includes(tag) ? 'active' : ''}"
+              onclick={() => {
+                if ($taskFilterGroupByTags.includes(tag)) {
+                  $taskFilterGroupByTags = $taskFilterGroupByTags.filter((t) => t !== tag);
+                } else {
+                  $taskFilterGroupByTags = [...$taskFilterGroupByTags, tag];
+                }
+              }}
+            >#{tag}</button>
           {/each}
         </div>
       {/if}
@@ -716,7 +878,7 @@
                   >⏱ {formatDuration(totalMs)}</button>
                 {/if}
                 {#each todo.tags as tag}
-                  <button class="tag-chip" onclick={(e) => { e.stopPropagation(); filterTag = tag; }} title="Filter by #{tag}">#{tag}</button>
+                  <button class="tag-chip" onclick={(e) => { e.stopPropagation(); $taskFilterTag = tag; }} title="Filter by #{tag}">#{tag}</button>
                 {/each}
               </div>
             </div>
@@ -783,7 +945,34 @@
   <div class="task-list">
     {#if filtered.length === 0}
       <div class="empty">No tasks match the current filters.</div>
+    {:else if $taskFilterGroupByTags.length > 0}
+      <!-- Grouped view — sorted by earliest due date, then best priority -->
+      {#each sortedGroups as { tag: groupTag, todos: groupTodos }}
+        <div class="group-divider">
+          <span>#{groupTag} · {groupTodos.length}</span>
+        </div>
+        {#each groupTodos as todo (todo.id + '::' + groupTag)}
+          {@render taskCard(todo)}
+        {/each}
+      {/each}
+      {#if ungroupedPending.length > 0}
+        <div class="group-divider">
+          <span>Other · {ungroupedPending.length}</span>
+        </div>
+        {#each ungroupedPending as todo (todo.id + '::other')}
+          {@render taskCard(todo)}
+        {/each}
+      {/if}
+      {#if doneTodos.length > 0}
+        <div class="section-divider">
+          <span>Completed · {doneTodos.length}</span>
+        </div>
+        {#each doneTodos as todo (todo.id)}
+          {@render taskCard(todo)}
+        {/each}
+      {/if}
     {:else}
+      <!-- Flat view -->
       {#if pendingTodos.length === 0}
         <div class="empty">All tasks completed.</div>
       {/if}
@@ -955,6 +1144,21 @@
   .section-divider::before, .section-divider::after {
     content: ''; flex: 1; height: 1px; background: var(--border);
   }
+
+  .group-divider {
+    display: flex; align-items: center; gap: 10px;
+    margin: 20px 0 6px; color: var(--accent-lt); font-size: 0.82rem;
+    font-weight: 700; letter-spacing: 0.03em;
+  }
+  .group-divider:first-child { margin-top: 4px; }
+  .group-divider::before, .group-divider::after {
+    content: ''; flex: 1; height: 1px; background: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+
+  .due-period-chip.active { background: var(--yellow-bg); border-color: var(--yellow); color: var(--yellow); }
+  .group-tag-chip { color: var(--accent-purple); border-color: color-mix(in srgb, var(--accent-purple) 30%, transparent); }
+  .group-tag-chip.active { background: color-mix(in srgb, var(--accent-purple) 15%, transparent); border-color: var(--accent-purple); color: var(--accent-purple); }
+  .group-clear-chip { color: var(--text-5); border-color: var(--border-2); }
 
   .task-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;

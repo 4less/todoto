@@ -12,6 +12,11 @@
 
   let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
   let loading = $state(true);
+  let sidebarCollapsed = $state(localStorage.getItem('todoto-sidebar-collapsed') === 'true');
+
+  $effect(() => {
+    localStorage.setItem('todoto-sidebar-collapsed', String(sidebarCollapsed));
+  });
 
   // ── Theme ─────────────────────────────────────────────────────────────────
   function applyTheme(t: 'system' | 'light' | 'dark') {
@@ -121,10 +126,22 @@
 
 <div class="app">
   <!-- Desktop sidebar -->
-  <nav class="sidebar">
-    <div class="sidebar-logo">
-      <img src="/logo.png" alt="todoto" class="logo-img" />
-      <span class="logo-text">todoto</span>
+  <nav class="sidebar {sidebarCollapsed ? 'collapsed' : ''}">
+    <div class="sidebar-header">
+      {#if !sidebarCollapsed}
+        <div class="sidebar-logo">
+          <img src="/logo.png" alt="todoto" class="logo-img" />
+          <span class="logo-text">todoto</span>
+        </div>
+      {/if}
+      <button class="collapse-btn" onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
+        title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
+        <!-- Panel-left icon — same as Claude's sidebar toggle -->
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <path d="M9 3v18"/>
+        </svg>
+      </button>
     </div>
 
     <div class="sidebar-nav">
@@ -132,18 +149,20 @@
         <button
           class="nav-item {$activeView === item.id ? 'active' : ''}"
           onclick={() => activeView.set(item.id)}
+          title={sidebarCollapsed ? item.label : ''}
         >
           {@html item.svg()}
-          <span>{item.label}</span>
+          {#if !sidebarCollapsed}<span>{item.label}</span>{/if}
         </button>
       {/each}
     </div>
 
     <div class="sidebar-footer">
-      <SyncIndicator onSync={triggerSync} />
-      <button class="settings-btn" onclick={() => showSettings.set(true)}>
+      <SyncIndicator onSync={triggerSync} collapsed={sidebarCollapsed} />
+      <button class="settings-btn" onclick={() => showSettings.set(true)}
+        title={sidebarCollapsed ? 'Settings' : ''}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        Settings
+        {#if !sidebarCollapsed}Settings{/if}
       </button>
     </div>
   </nav>
@@ -214,16 +233,36 @@
     background: var(--surface);
     border-right: 1px solid var(--border);
     display: flex; flex-direction: column; padding: 20px 12px; gap: 4px;
+    transition: width 0.2s ease, min-width 0.2s ease, padding 0.2s ease;
+    overflow: hidden;
   }
+  .sidebar.collapsed { width: 64px; min-width: 64px; padding: 20px 8px; }
 
-  .sidebar-logo { padding: 4px 8px 16px; border-bottom: 1px solid var(--border); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-  .logo-img { width: 24px; height: 24px; object-fit: contain; }
+  .sidebar-header {
+    display: flex; align-items: center;
+    padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 8px;
+    min-height: 40px;
+  }
+  .sidebar.collapsed .sidebar-header { justify-content: center; }
+
+  .sidebar-logo { display: flex; align-items: center; gap: 8px; flex: 1; overflow: hidden; }
+  .logo-img { width: 24px; height: 24px; object-fit: contain; flex-shrink: 0; }
   .logo-text {
     font-size: 1.3rem; font-weight: 700;
     background: linear-gradient(135deg, var(--accent), var(--accent-purple));
     -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
-    letter-spacing: -0.5px;
+    letter-spacing: -0.5px; white-space: nowrap;
   }
+
+  .collapse-btn {
+    flex-shrink: 0; margin-left: auto;
+    width: 28px; height: 28px; border-radius: 6px; border: none;
+    background: transparent; color: var(--text-6); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.12s, color 0.12s;
+  }
+  .collapse-btn:hover { background: var(--border); color: var(--text-2); }
+  .sidebar.collapsed .collapse-btn { margin-left: 0; }
 
   .sidebar-nav { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 
@@ -237,6 +276,7 @@
   }
   .nav-item:hover { background: var(--border); color: var(--text-2); }
   .nav-item.active { background: var(--accent-bg); color: var(--accent); }
+  .sidebar.collapsed .nav-item { justify-content: center; padding: 10px; gap: 0; }
 
   .sidebar-footer {
     display: flex; flex-direction: column; gap: 4px;
@@ -251,6 +291,7 @@
     transition: background 0.15s, color 0.15s; width: 100%; text-align: left;
   }
   .settings-btn:hover { background: var(--border); color: var(--text-2); }
+  .sidebar.collapsed .settings-btn { justify-content: center; padding: 8px; gap: 0; }
 
   .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; background: var(--bg); }
 

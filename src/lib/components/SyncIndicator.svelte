@@ -1,7 +1,7 @@
 <script lang="ts">
   import { syncState } from '$lib/stores';
 
-  let { onSync }: { onSync: () => void } = $props();
+  let { onSync, collapsed = false }: { onSync: () => void; collapsed?: boolean } = $props();
 
   function fmtTime(iso: string | null): string {
     if (!iso) return 'never';
@@ -10,7 +10,8 @@
   }
 </script>
 
-<button class="sync-btn" onclick={onSync} title="Sync now">
+<button class="sync-btn {collapsed ? 'icon-only' : ''}" onclick={onSync}
+  title={collapsed ? ($syncState.syncing ? 'Syncing…' : $syncState.lastSync ? `Synced ${fmtTime($syncState.lastSync)}` : 'Sync now') : 'Sync now'}>
   <svg
     class="sync-icon {$syncState.syncing ? 'spinning' : ''}"
     width="14" height="14" viewBox="0 0 24 24" fill="none"
@@ -20,12 +21,8 @@
     <polyline points="1 20 1 14 7 14"/>
     <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
   </svg>
-  {#if $syncState.syncing}
-    Syncing…
-  {:else if $syncState.lastSync}
-    Synced {fmtTime($syncState.lastSync)}
-  {:else}
-    Sync now
+  {#if !collapsed}
+    {#if $syncState.syncing}Syncing…{:else if $syncState.lastSync}Synced {fmtTime($syncState.lastSync)}{:else}Sync now{/if}
   {/if}
 </button>
 
@@ -45,6 +42,7 @@
     transition: background 0.15s, color 0.15s; width: 100%; text-align: left;
   }
   .sync-btn:hover { background: var(--border); color: var(--text-2); }
+  .sync-btn.icon-only { justify-content: center; padding: 7px; gap: 0; }
 
   .sync-icon { transition: transform 0.3s; }
   .sync-icon.spinning { animation: spin 1s linear infinite; }

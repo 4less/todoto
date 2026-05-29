@@ -1,6 +1,15 @@
 import { writable, derived } from 'svelte/store';
 import type { Note, Todo, Settings, SyncResult, View } from './types';
 
+function localStore<T>(key: string, initial: T) {
+  const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+  const store = writable<T>(stored !== null ? JSON.parse(stored) : initial);
+  store.subscribe((v) => {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(key, JSON.stringify(v));
+  });
+  return store;
+}
+
 export const notes = writable<Note[]>([]);
 export const todos = writable<Todo[]>([]);
 export const diskFolders = writable<string[]>([]);
@@ -30,6 +39,13 @@ export const syncState = writable<SyncState>({
   lastResult: null,
   lastSync: null,
 });
+
+export const taskFilterStatus = localStore<'all' | 'pending' | 'done'>('todoto-filter-status', 'all');
+export const taskFilterPriority = localStore<'' | 'high' | 'medium' | 'low'>('todoto-filter-priority', '');
+export const taskFilterTag = localStore<string>('todoto-filter-tag', '');
+export const taskFilterDuePeriod = localStore<'' | 'overdue' | 'today' | 'week' | 'month'>('todoto-filter-due', '');
+export const taskFilterGroupByTags = localStore<string[]>('todoto-filter-group-tags', []);
+export const taskFilterSearch = localStore<string>('todoto-filter-search', '');
 
 export const pendingTodos = derived(todos, ($todos) => $todos.filter((t) => !t.done));
 export const doneTodos = derived(todos, ($todos) => $todos.filter((t) => t.done));

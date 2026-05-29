@@ -27,6 +27,7 @@ export interface Todo {
   finished_at: string | null;
   work_sessions: WorkSession[];
   notes?: string | null;
+  note_path?: string | null;
 }
 
 export interface Settings {

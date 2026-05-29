@@ -474,14 +474,9 @@
     });
     el.addEventListener('keydown', handleNotesHeadingShortcut);
 
-    async function insertImageFromClipboard() {
-      if (!notesOpenId) return false;
-      // Read the clipboard image directly from Rust — bypasses unreliable JS clipboard API
-      const b64 = await invoke<string | null>('read_clipboard_image');
-      if (!b64) return false;
-      const relPath = await invoke<string>('save_task_note_image', {
-        id: notesOpenId, dataB64: b64, ext: 'png',
-      });
+    async function insertImageBlob(blob: Blob) {
+      if (!notesOpenId) return;
+      const relPath = await saveTaskNoteImage(notesOpenId, blob);
       const repoPath = $settings.repo_path;
       const assetUrl = repoPath ? convertFileSrc(`${repoPath}/${relPath}`) : relPath;
       c.editor.action((ctx) => {
@@ -492,38 +487,49 @@
           view.dispatch(view.state.tr.replaceSelectionWith(node));
         }
       });
-      return true;
     }
 
-    // Intercept Ctrl+V at keydown so we can check the clipboard via Rust before
-    // the paste event fires. If there's an image we handle it; otherwise we let
-    // the native paste event proceed normally for text.
-    async function handleNotesCtrlV(e: KeyboardEvent) {
-      if (!((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v')) return;
+    // Paste handler — three paths in priority order:
+    // 1. clipboardData already has an image file (some WebKit builds expose this)
+    // 2. clipboardData has text/html → let ProseMirror handle natively (fast, no Rust call)
+    // 3. clipboardData is empty (screenshot on Linux) → read image via Rust arboard
+    async function handlePaste(e: ClipboardEvent) {
       if (!notesOpenId) return;
-      // Caption textarea handles its own paste natively.
-      if (document.activeElement?.classList.contains('caption-input')) return;
+      if ((document.activeElement as HTMLElement)?.classList.contains('caption-input')) return;
 
-      // Prevent default NOW (synchronously) so the browser's paste event
-      // doesn't fire and cause ProseMirror to also insert content.
-      e.preventDefault();
-      e.stopPropagation();
+      const items = Array.from(e.clipboardData?.items ?? []);
 
-      try {
-        const handled = await insertImageFromClipboard();
-        if (!handled) {
-          // No image — fall back to plain-text paste via clipboard API.
-          const text = await navigator.clipboard.readText().catch(() => '');
-          if (text) {
-            c.editor.action((ctx) => {
-              const view = ctx.get(editorViewCtx);
-              view.dispatch(view.state.tr.insertText(text));
-            });
-          }
-        }
-      } catch (err) {
-        console.error('Clipboard paste failed:', err);
+      // Path 1: image file directly in clipboardData
+      const imgItem = items.find((i) => i.kind === 'file' && i.type.startsWith('image/'));
+      if (imgItem) {
+        e.preventDefault();
+        const blob = imgItem.getAsFile();
+        if (blob) try { await insertImageBlob(blob); } catch {}
+        return;
       }
+
+      // Path 2: string content present → ProseMirror handles it, don't intercept
+      if (items.some((i) => i.kind === 'string')) return;
+
+      // Path 3: empty clipboardData (Linux screenshot) → ask Rust for the image
+      e.preventDefault();
+      try {
+        const b64 = await invoke<string | null>('read_clipboard_image');
+        if (!b64) return;
+        const relPath = await invoke<string>('save_task_note_image', {
+          id: notesOpenId, dataB64: b64, ext: 'png',
+        });
+        const repoPath = $settings.repo_path;
+        const assetUrl = repoPath ? convertFileSrc(`${repoPath}/${relPath}`) : relPath;
+        c.editor.action((ctx) => {
+          const view = ctx.get(editorViewCtx);
+          const nodeType = view.state.schema.nodes['image-block'];
+          if (nodeType) {
+            const node = nodeType.create({ src: assetUrl, caption: '', ratio: 1 });
+            view.dispatch(view.state.tr.replaceSelectionWith(node));
+          }
+        });
+      } catch {}
     }
 
     // Replace Milkdown's single-line caption <input> with an auto-resizing <textarea>.
@@ -580,7 +586,7 @@
         }
         patchToolbarCodeButton(c, el);
         c.editor.action((ctx) => { installCodeBlockPlugin(ctx); });
-        el.addEventListener('keydown', handleNotesCtrlV, true);
+        el.addEventListener('paste', handlePaste, true);
         captionObs.observe(el, { childList: true, subtree: true });
         upgradeCaptions(el);
       } else void c.destroy();
@@ -590,7 +596,7 @@
         destroyed = true;
         captionObs.disconnect();
         el.removeEventListener('keydown', handleNotesHeadingShortcut);
-        el.removeEventListener('keydown', handleNotesCtrlV, true);
+        el.removeEventListener('paste', handlePaste, true);
         if (notesEditorInstance === instance) notesEditorInstance = null;
         void instance?.destroy();
         instance = null;

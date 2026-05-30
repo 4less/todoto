@@ -3,11 +3,12 @@
   import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, settings } from '$lib/stores';
   import { api, saveTaskNoteImage } from '$lib/api';
   import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-  import type { Todo, WorkSession } from '$lib/types';
+  import type { Todo, WorkSession, CommitInfo } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
   import DatePicker from '$lib/components/DatePicker.svelte';
   import { Crepe, CrepeFeature } from '@milkdown/crepe';
   import { replaceAll } from '@milkdown/utils';
+  import { diffLines } from 'diff';
   import { commandsCtx, editorViewCtx } from '@milkdown/kit/core';
   import { setBlockTypeCommand, codeBlockSchema, inlineCodeSchema } from '@milkdown/kit/preset/commonmark';
   import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
@@ -58,6 +59,90 @@
   let notesRawMode = $state(false);
   let notesSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let notesEditorInstance: Crepe | null = null;
+  let notesEditorLoading = false;
+
+  // ── Notes history state ───────────────────────────────────────────────────
+  let notesHistoryMode = $state(false);
+  let notesHistoryCommits = $state<CommitInfo[]>([]);
+  let notesHistorySha = $state<string | null>(null);
+  let notesHistoryLoading = $state(false);
+  let notesHistoryContentLoading = $state(false);
+  let notesHistoryContent = $state('');
+  let notesDiffMode = $state(false);
+
+  function fmtHistoryDate(iso: string): string {
+    const d = new Date(iso);
+    return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  function buildDiffLines(oldText: string, newText: string) {
+    const chunks = diffLines(oldText, newText);
+    const result: Array<{ type: 'add' | 'del' | 'ctx'; text: string }> = [];
+    for (const chunk of chunks) {
+      const lines = chunk.value.replace(/\n$/, '').split('\n');
+      const type = chunk.added ? 'add' : chunk.removed ? 'del' : 'ctx';
+      for (const text of lines) result.push({ type, text });
+    }
+    return result;
+  }
+
+  async function openNotesHistory() {
+    if (!notesOpenId) return;
+    notesHistoryLoading = true;
+    notesHistoryMode = true;
+    notesHistorySha = null;
+    notesHistoryContent = '';
+    notesDiffMode = false;
+    notesHistoryCommits = [];
+    try {
+      notesHistoryCommits = await api.getNoteHistory(`task-notes/${notesOpenId}.md`);
+    } finally {
+      notesHistoryLoading = false;
+    }
+  }
+
+  async function selectNotesHistoryCommit(sha: string) {
+    if (!notesEditorInstance) return;
+    notesHistorySha = sha;
+    notesHistoryContentLoading = true;
+    try {
+      const raw = await api.getNoteAtCommit(`task-notes/${notesOpenId}.md`, sha);
+      notesHistoryContent = raw;
+      if (!notesDiffMode) {
+        notesEditorLoading = true;
+        notesEditorInstance.editor.action(replaceAll(raw));
+        notesEditorLoading = false;
+        notesEditorInstance.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => false }); });
+      }
+    } finally {
+      notesHistoryContentLoading = false;
+    }
+  }
+
+  function closeNotesHistory() {
+    notesDiffMode = false;
+    notesHistoryContent = '';
+    notesHistoryMode = false;
+    notesHistorySha = null;
+    notesHistoryCommits = [];
+    if (notesEditorInstance) {
+      notesEditorLoading = true;
+      notesEditorInstance.editor.action(replaceAll(notesContent));
+      notesEditorLoading = false;
+      notesEditorInstance.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => true }); });
+    }
+  }
+
+  function toggleNotesDiffMode() {
+    notesDiffMode = !notesDiffMode;
+    if (!notesEditorInstance || !notesHistorySha) return;
+    if (!notesDiffMode) {
+      notesEditorLoading = true;
+      notesEditorInstance.editor.action(replaceAll(notesHistoryContent));
+      notesEditorLoading = false;
+      notesEditorInstance.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => false }); });
+    }
+  }
 
   $effect(() => {
     if ($activeTimers.size > 0) {
@@ -466,8 +551,7 @@
     });
     c.on((api) => {
       api.markdownUpdated((_, markdown) => {
-        // Keep asset:// URLs in notesContent so the editor always renders correctly.
-        // stripAssetUrls is only called at save time (persistNotes).
+        if (notesEditorLoading) return;
         notesContent = markdown;
         scheduleNotesSave();
       });
@@ -648,6 +732,7 @@
 
   function openNotes(todo: Todo) {
     notesRawMode = false;
+    notesHistoryMode = false; notesHistorySha = null; notesHistoryCommits = [];
     if (notesOpenId && notesOpenId !== todo.id) {
       if (notesSaveTimer) { clearTimeout(notesSaveTimer); notesSaveTimer = null; }
       const prev = $todos.find((t) => t.id === notesOpenId);
@@ -972,20 +1057,81 @@
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                 Notes
               </span>
+              {#if notesHistoryMode}
+                <select
+                  class="notes-history-select"
+                  onchange={(e) => {
+                    const sha = (e.target as HTMLSelectElement).value;
+                    if (sha) {
+                      void selectNotesHistoryCommit(sha);
+                    } else {
+                      notesDiffMode = false;
+                      notesHistoryContent = '';
+                      notesHistorySha = null;
+                      if (notesEditorInstance) {
+                        notesEditorLoading = true;
+                        notesEditorInstance.editor.action(replaceAll(notesContent));
+                        notesEditorLoading = false;
+                        notesEditorInstance.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => true }); });
+                      }
+                    }
+                  }}
+                  disabled={notesHistoryContentLoading || notesHistoryLoading}
+                >
+                  {#if notesHistoryLoading}
+                    <option value="">Loading…</option>
+                  {:else if notesHistoryCommits.length === 0}
+                    <option value="">No history</option>
+                  {:else}
+                    <option value="" selected={!notesHistorySha}>Current version</option>
+                    {#each notesHistoryCommits as commit}
+                      <option value={commit.sha} selected={notesHistorySha === commit.sha} title={commit.message}>
+                        {fmtHistoryDate(commit.date)}
+                      </option>
+                    {/each}
+                  {/if}
+                </select>
+              {/if}
               <div style="display:flex;gap:4px;align-items:center;">
-                <button class="notes-close-btn" onclick={clearNotesContent} title="Clear notes">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
-                </button>
-                <button class="notes-close-btn {notesRawMode ? 'raw-active' : ''}" onclick={toggleNotesRaw} title="{notesRawMode ? 'Switch to WYSIWYG' : 'Switch to raw markdown'}">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                </button>
+                {#if notesHistoryMode && notesHistorySha}
+                  <button class="notes-close-btn {notesDiffMode ? 'raw-active' : ''}" onclick={toggleNotesDiffMode} title="{notesDiffMode ? 'Show editor' : 'Show diff vs current'}">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="18"/><rect x="14" y="3" width="7" height="18"/></svg>
+                  </button>
+                {/if}
+                {#if notesHistoryMode}
+                  <button class="notes-close-btn raw-active" onclick={closeNotesHistory} title="Exit history">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                  </button>
+                {:else}
+                  <button class="notes-close-btn" onclick={clearNotesContent} title="Clear notes">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                  </button>
+                  <button class="notes-close-btn" onclick={openNotesHistory} title="Version history">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                  </button>
+                  <button class="notes-close-btn {notesRawMode ? 'raw-active' : ''}" onclick={toggleNotesRaw} title="{notesRawMode ? 'Switch to WYSIWYG' : 'Switch to raw markdown'}">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                  </button>
+                {/if}
                 <button class="notes-close-btn" onclick={closeNotes} title="Close notes">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
               </div>
             </div>
-            <div class="notes-editor-wrap" style:display={notesRawMode ? 'none' : ''} use:initNotesEditor></div>
-            {#if notesRawMode}
+
+            {#if notesDiffMode && notesHistorySha && notesHistoryContent}
+              {@const diffChunks = buildDiffLines(notesHistoryContent, stripAssetUrls(notesContent))}
+              <div class="notes-diff-view">
+                {#each diffChunks as line}
+                  <div class="diff-line diff-{line.type}">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}{line.text}</div>
+                {/each}
+                {#if diffChunks.every(l => l.type === 'ctx')}
+                  <div class="diff-identical">No differences</div>
+                {/if}
+              </div>
+            {/if}
+            <div class="notes-editor-wrap" style:display={notesRawMode && !notesHistoryMode || (notesDiffMode && !!notesHistorySha) ? 'none' : ''} use:initNotesEditor></div>
+            {#if notesRawMode && !notesHistoryMode}
               <textarea
                 class="notes-raw-editor"
                 bind:value={notesContent}
@@ -1417,7 +1563,7 @@
   }
 
   .notes-panel-header {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; gap: 8px;
     padding: 7px 14px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-deep);
@@ -1427,7 +1573,7 @@
     display: flex; align-items: center; gap: 6px;
     font-size: 0.68rem; font-weight: 700;
     text-transform: uppercase; letter-spacing: 0.09em;
-    color: var(--accent);
+    color: var(--accent); flex-shrink: 0;
   }
 
   .notes-close-btn {
@@ -1461,6 +1607,40 @@
 
   /* Notes Milkdown editor */
   .notes-editor-wrap { min-height: 140px; }
+
+  :global(.notes-editor-wrap .milkdown) {
+    --crepe-color-background: var(--bg-deep);
+    --crepe-color-surface: var(--surface);
+    --crepe-color-surface-low: var(--bg);
+    --crepe-color-on-background: var(--text-2);
+    --crepe-color-on-surface: var(--text-2);
+    --crepe-color-on-surface-variant: var(--text-3);
+    --crepe-color-outline: var(--border-2);
+    --crepe-color-primary: var(--accent);
+    --crepe-color-secondary: var(--accent-bg);
+    --crepe-color-on-secondary: var(--accent-ltr);
+    --crepe-color-inline-code: var(--accent-purple);
+    --crepe-color-inline-area: var(--border);
+    --crepe-color-hover: var(--accent-bg);
+    --crepe-color-selected: rgba(99, 102, 241, 0.45);
+    --crepe-color-error: var(--red);
+    --crepe-shadow-1: none;
+    --crepe-shadow-2: none;
+  }
+
+  /* Notes history dropdown */
+  .notes-history-select {
+    flex: 1; min-width: 0;
+    background: var(--bg); border: 1px solid var(--border-2); border-radius: 6px;
+    color: var(--text-2); padding: 2px 24px 2px 8px; font-size: 0.72rem; outline: none;
+    cursor: pointer; max-width: 200px;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 6px center;
+  }
+  .notes-history-select:focus { border-color: var(--accent); }
+  .notes-history-select:disabled { opacity: 0.5; cursor: default; }
+
   :global(.notes-editor-wrap .ProseMirror) {
     padding: 4px 16px 12px !important;
     font-size: 0.85rem;
@@ -1544,5 +1724,19 @@
   /* Notes button active state in selection bar */
   .sel-btn.notes-active { color: var(--accent-lt); border-color: var(--accent); background: var(--accent-bg); }
   .sel-btn.notes-active:hover { background: var(--accent-bg-2); }
+
+  /* Notes diff view */
+  .notes-diff-view {
+    flex: 1; min-height: 140px; overflow-y: auto;
+    background: var(--bg-deep);
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.78rem; line-height: 1.65;
+    padding: 8px 0;
+  }
+  .diff-line { display: block; padding: 1px 16px; white-space: pre-wrap; word-break: break-all; }
+  .diff-add { background: color-mix(in srgb, var(--green) 12%, transparent); color: var(--green); }
+  .diff-del { background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red); }
+  .diff-ctx { color: var(--text-6); }
+  .diff-identical { padding: 20px 16px; color: var(--text-7); font-size: 0.78rem; font-style: italic; }
 
 </style>

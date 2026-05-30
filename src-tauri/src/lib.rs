@@ -6,7 +6,8 @@ use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
@@ -23,6 +24,10 @@ pub struct Note {
     pub pinned: bool,
     #[serde(default)]
     pub tags: Vec<String>,
+    // Repo-relative path to the .md file (e.g. "folder/Title.md").
+    // Not persisted in the file itself — computed at load/save time.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,10 +123,18 @@ pub struct SyncResult {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Serialize, Clone)]
+pub struct CommitInfo {
+    pub sha: String,
+    pub date: String,
+    pub message: String,
+}
+
 pub struct AppState {
     pub settings: Settings,
     pub settings_path: PathBuf,
     pub last_sync: Option<DateTime<Utc>>,
+    pub syncing: Arc<AtomicBool>,
 }
 
 // ── Settings I/O ──────────────────────────────────────────────────────────────
@@ -135,7 +148,7 @@ fn load_settings_from_path(path: &Path) -> Settings {
     } else {
         Settings {
             auto_sync: true,
-            sync_interval_seconds: 30,
+            sync_interval_seconds: 300,
             ..Default::default()
         }
     }
@@ -189,6 +202,12 @@ fn load_todos(settings: &Settings) -> Vec<Todo> {
         if t.notes.is_none() {
             if let Some(ref rel_path) = t.note_path {
                 t.notes = fs::read_to_string(repo_base.join(rel_path)).ok();
+            } else {
+                // Fallback: check task-notes/{id}.md even if note_path not set in JSON
+                let fallback = task_note_path(&repo_base, &t.id);
+                if fallback.exists() {
+                    t.notes = fs::read_to_string(&fallback).ok();
+                }
             }
         }
         t
@@ -345,7 +364,8 @@ fn parse_note_file(path: &Path, repo_base: &Path) -> Option<Note> {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    Some(Note { id, title, content: body.to_string(), folder, created_at, updated_at, pinned, tags })
+    let file_path = rel.to_string_lossy().replace('\\', "/");
+    Some(Note { id, title, content: body.to_string(), folder, created_at, updated_at, pinned, tags, file_path })
 }
 
 fn scan_notes(repo_base: &Path) -> Vec<Note> {
@@ -522,8 +542,11 @@ fn load_manifest(repo_path: &Path) -> SyncManifest {
 
 fn save_manifest(repo_path: &Path, manifest: &SyncManifest) {
     let path = repo_path.join(".sync_manifest.json");
+    let tmp = repo_path.join(".sync_manifest.json.tmp");
     if let Ok(json) = serde_json::to_string_pretty(manifest) {
-        let _ = fs::write(path, json);
+        if fs::write(&tmp, json).is_ok() {
+            let _ = fs::rename(&tmp, &path);
+        }
     }
 }
 
@@ -567,10 +590,14 @@ fn github_blob_sha(content: &[u8]) -> String {
 }
 
 fn encode_url_path(path: &str) -> String {
-    path.split('/')
-        .map(|seg| seg.replace(' ', "%20"))
-        .collect::<Vec<_>>()
-        .join("/")
+    path.split('/').map(|seg| {
+        seg.replace('%', "%25")
+           .replace(' ', "%20")
+           .replace('#', "%23")
+           .replace('?', "%3F")
+           .replace('&', "%26")
+           .replace('+', "%2B")
+    }).collect::<Vec<_>>().join("/")
 }
 
 fn is_image_extension(ext: &str) -> bool {
@@ -626,6 +653,25 @@ async fn gh_get_file(client: &Client, owner: &str, repo: &str, path: &str) -> Re
     Ok((content, file.sha))
 }
 
+// Downloads a file from GitHub at a specific commit ref. Returns decoded utf-8 content.
+async fn gh_get_file_at_ref(client: &Client, owner: &str, repo: &str, path: &str, ref_: &str) -> Result<String, String> {
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/contents/{}?ref={}",
+        encode_url_path(path),
+        ref_
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("get {path}@{ref_}: HTTP {}", resp.status()));
+    }
+    let file: GhFileResponse = resp.json().await.map_err(|e| e.to_string())?;
+    let clean = file.content.replace(['\n', '\r'], "");
+    let bytes = B64.decode(&clean).map_err(|e| format!("decode {path}: {e}"))?;
+    String::from_utf8(bytes).map_err(|e| format!("utf8 {path}: {e}"))
+}
+
+const GH_MAX_FILE_BYTES: usize = 1_000_000; // GitHub Contents API hard limit is ~1 MB
+
 // Creates or updates a file on GitHub. Returns the new blob SHA.
 async fn gh_put_file(
     client: &Client,
@@ -635,6 +681,12 @@ async fn gh_put_file(
     content: &str,
     current_sha: Option<&str>,
 ) -> Result<String, String> {
+    if content.len() > GH_MAX_FILE_BYTES {
+        return Err(format!(
+            "Cannot sync {path}: file is {} KB, GitHub's limit is 1 MB. Split it or reduce its size.",
+            content.len() / 1024
+        ));
+    }
     let url = format!(
         "https://api.github.com/repos/{owner}/{repo}/contents/{}",
         encode_url_path(path)
@@ -934,8 +986,27 @@ async fn do_sync(settings: &Settings) -> SyncResult {
                         }
                         Err(e) => errors.push(e),
                     }
+                } else if github_changed && local_changed && path.ends_with(".md") {
+                    // Both sides changed on a note → save remote as a conflict copy, upload local.
+                    if let Ok((remote_content, _)) = gh_get_file(&client, &owner, &repo, path).await {
+                        let conflict_path = format!(
+                            "{} (conflict {}).md",
+                            path.trim_end_matches(".md"),
+                            Utc::now().format("%Y-%m-%d")
+                        );
+                        let conflict_local = repo_path.join(&conflict_path);
+                        if let Some(p) = conflict_local.parent() { fs::create_dir_all(p).ok(); }
+                        let _ = fs::write(&conflict_local, &remote_content);
+                    }
+                    match gh_put_file(&client, &owner, &repo, path, content, Some(gh_sha)).await {
+                        Ok(new_sha) => {
+                            new_manifest.insert(path.clone(), new_sha);
+                            uploaded += 1;
+                        }
+                        Err(e) => errors.push(e),
+                    }
                 } else {
-                    // Local changed (or conflict on a note) → local wins, upload.
+                    // Local changed, GitHub unchanged → upload.
                     match gh_put_file(&client, &owner, &repo, path, content, Some(gh_sha)).await {
                         Ok(new_sha) => {
                             new_manifest.insert(path.clone(), new_sha);
@@ -1098,6 +1169,10 @@ fn save_note(state: State<Mutex<AppState>>, mut note: Note) -> Result<Note, Stri
         }
     }
     write_note_file(&repo_base, &note)?;
+    let fp = note_file_path(&repo_base, &note);
+    if let Ok(rel) = fp.strip_prefix(&repo_base) {
+        note.file_path = rel.to_string_lossy().replace('\\', "/");
+    }
     Ok(note)
 }
 
@@ -1208,8 +1283,15 @@ fn save_settings(state: State<Mutex<AppState>>, settings: Settings) -> Result<()
 
 #[tauri::command]
 async fn sync_now(state: State<'_, Mutex<AppState>>) -> Result<SyncResult, String> {
-    let settings = state.lock().unwrap().settings.clone();
+    let (settings, syncing) = {
+        let s = state.lock().unwrap();
+        (s.settings.clone(), Arc::clone(&s.syncing))
+    };
+    if syncing.swap(true, Ordering::SeqCst) {
+        return Ok(SyncResult { success: false, message: "Sync already in progress.".to_string(), timestamp: Utc::now() });
+    }
     let result = do_sync(&settings).await;
+    syncing.store(false, Ordering::SeqCst);
     if result.success {
         state.lock().unwrap().last_sync = Some(result.timestamp);
     }
@@ -1277,6 +1359,100 @@ fn find_asset(note_dir: String, src: String) -> Option<String> {
     if direct.exists() { Some(direct.to_string_lossy().into_owned()) } else { None }
 }
 
+// Strip YAML frontmatter from note content so metadata-only changes (e.g. updated_at)
+// are not treated as meaningful content differences.
+fn strip_note_body(content: &str) -> &str {
+    if content.starts_with("---\n") {
+        let rest = &content[4..];
+        if let Some(end) = rest.find("\n---\n") {
+            return &rest[end + 5..];
+        }
+    }
+    content
+}
+
+#[tauri::command]
+async fn get_note_history(state: State<'_, Mutex<AppState>>, path: String) -> Result<Vec<CommitInfo>, String> {
+    let (token, repo_url) = {
+        let s = state.lock().unwrap();
+        (s.settings.git_token.clone(), s.settings.repo_url.clone())
+    };
+    let (owner, repo) = parse_github_repo(&repo_url).ok_or("Invalid GitHub URL")?;
+    let client = make_github_client(&token)?;
+    let url = format!(
+        "https://api.github.com/repos/{owner}/{repo}/commits?path={}&per_page=50",
+        encode_url_path(&path)
+    );
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API error: HTTP {}", resp.status()));
+    }
+    let commits_json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let commits: Vec<CommitInfo> = commits_json.as_array().unwrap_or(&vec![]).iter().filter_map(|c| {
+        Some(CommitInfo {
+            sha: c["sha"].as_str()?.to_string(),
+            date: c["commit"]["author"]["date"].as_str()?.to_string(),
+            message: c["commit"]["message"].as_str()?.to_string(),
+        })
+    }).collect();
+
+    if commits.len() <= 1 {
+        return Ok(commits);
+    }
+
+    // Fetch content at each commit in parallel, then deduplicate by meaningful body.
+    // Docs notes have YAML frontmatter whose updated_at changes every save — we strip
+    // it before comparing so metadata-only saves don't appear as new versions.
+    let client = Arc::new(client);
+    let owner = Arc::new(owner);
+    let repo_arc = Arc::new(repo);
+    let path_arc = Arc::new(path);
+
+    let handles: Vec<_> = commits.iter().map(|commit| {
+        let c = Arc::clone(&client);
+        let o = Arc::clone(&owner);
+        let r = Arc::clone(&repo_arc);
+        let p = Arc::clone(&path_arc);
+        let sha = commit.sha.clone();
+        tokio::spawn(async move {
+            let result = gh_get_file_at_ref(&c, &o, &r, &p, &sha).await;
+            (sha, result.ok())
+        })
+    }).collect();
+
+    let mut sha_to_body: HashMap<String, String> = HashMap::new();
+    for handle in handles {
+        if let Ok((sha, Some(content))) = handle.await {
+            sha_to_body.insert(sha, strip_note_body(&content).trim().to_string());
+        }
+    }
+
+    // Walk newest-first; emit only commits where body differs from the previous emitted one.
+    let mut result = Vec::new();
+    let mut prev_body: Option<String> = None;
+    for commit in commits {
+        if let Some(body) = sha_to_body.get(&commit.sha) {
+            if prev_body.as_deref() != Some(body.as_str()) {
+                prev_body = Some(body.clone());
+                result.push(commit);
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
+async fn get_note_at_commit(state: State<'_, Mutex<AppState>>, path: String, sha: String) -> Result<String, String> {
+    let (token, repo_url) = {
+        let s = state.lock().unwrap();
+        (s.settings.git_token.clone(), s.settings.repo_url.clone())
+    };
+    let (owner, repo) = parse_github_repo(&repo_url).ok_or("Invalid GitHub URL")?;
+    let client = make_github_client(&token)?;
+    gh_get_file_at_ref(&client, &owner, &repo, &path, &sha).await
+}
+
 // ── App entry point ───────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1312,10 +1488,15 @@ pub fn run() {
 
             migrate_legacy_notes(&settings);
 
+            let syncing = Arc::new(AtomicBool::new(false));
+
             if settings.auto_sync && !settings.repo_url.is_empty() {
                 let s = settings.clone();
+                let flag = Arc::clone(&syncing);
                 tauri::async_runtime::spawn(async move {
+                    flag.store(true, Ordering::SeqCst);
                     do_sync(&s).await;
+                    flag.store(false, Ordering::SeqCst);
                 });
             }
 
@@ -1323,6 +1504,7 @@ pub fn run() {
                 settings,
                 settings_path,
                 last_sync: None,
+                syncing,
             }));
 
             Ok(())
@@ -1343,6 +1525,8 @@ pub fn run() {
             save_task_note_image,
             read_file_base64,
             find_asset,
+            get_note_history,
+            get_note_at_commit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,13 +2,14 @@
   import { onMount, onDestroy } from 'svelte';
   import { notes, todos, selectedNoteId, diskFolders } from '$lib/stores';
   import { api } from '$lib/api';
-  import type { Note } from '$lib/types';
+  import type { Note, CommitInfo } from '$lib/types';
   import { extractTasksFromMarkdown } from '$lib/taskAnnotations';
   import { Crepe, CrepeFeature } from '@milkdown/crepe';
   import '@milkdown/crepe/theme/common/style.css';
   import '@milkdown/crepe/theme/nord-dark.css';
   import { replaceAll } from '@milkdown/utils';
   import { editorViewCtx, commandsCtx } from '@milkdown/core';
+  import { diffLines } from 'diff';
   import { setBlockTypeCommand, codeBlockSchema, inlineCodeSchema } from '@milkdown/kit/preset/commonmark';
   import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
   import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
@@ -46,6 +47,106 @@
   let currentNote: Note | null = $state(null);
   let lastLoadedId = '';
   let rawMode = $state(false);
+
+  // History mode
+  let historyMode = $state(false);
+  let historyCommits = $state<CommitInfo[]>([]);
+  let historySelectedSha = $state<string | null>(null);
+  let historyLoading = $state(false);
+  let historyContentLoading = $state(false);
+  let historyContent = $state('');  // raw file content at selected commit
+  let diffMode = $state(false);
+
+  function fmtHistoryDate(iso: string): string {
+    const d = new Date(iso);
+    return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  // Strip YAML frontmatter so metadata-only changes don't pollute the diff.
+  function stripFrontmatter(content: string): string {
+    if (content.startsWith('---\n')) {
+      const rest = content.slice(4);
+      const end = rest.indexOf('\n---\n');
+      if (end !== -1) return rest.slice(end + 5);
+    }
+    return content;
+  }
+
+  function buildDiffLines(oldText: string, newText: string) {
+    const chunks = diffLines(oldText, newText);
+    const result: Array<{ type: 'add' | 'del' | 'ctx'; text: string }> = [];
+    for (const chunk of chunks) {
+      const lines = chunk.value.replace(/\n$/, '').split('\n');
+      const type = chunk.added ? 'add' : chunk.removed ? 'del' : 'ctx';
+      for (const text of lines) result.push({ type, text });
+    }
+    return result;
+  }
+
+  function noteFilePath(note: Note): string {
+    return note.file_path ?? (note.folder ? `${note.folder}/${note.title}.md` : `${note.title}.md`);
+  }
+
+  async function openHistory() {
+    if (!currentNote) return;
+    historyLoading = true;
+    historyMode = true;
+    historySelectedSha = null;
+    historyContent = '';
+    diffMode = false;
+    historyCommits = [];
+    try {
+      historyCommits = await api.getNoteHistory(noteFilePath(currentNote));
+    } finally {
+      historyLoading = false;
+    }
+  }
+
+  async function selectHistoryCommit(sha: string) {
+    if (!currentNote || !crepe) return;
+    historySelectedSha = sha;
+    historyContentLoading = true;
+    try {
+      const raw = await api.getNoteAtCommit(noteFilePath(currentNote), sha);
+      historyContent = raw;
+      if (!diffMode) {
+        loadingNote = true;
+        crepe.editor.action(replaceAll(makeImagesLoadable(stripFrontmatter(raw), currentNote.folder ?? '')));
+        loadingNote = false;
+        crepe.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => false }); });
+      }
+    } finally {
+      historyContentLoading = false;
+    }
+  }
+
+  function closeHistory() {
+    diffMode = false;
+    historyContent = '';
+    historyMode = false;
+    historySelectedSha = null;
+    historyCommits = [];
+    if (crepe && currentNote) {
+      loadingNote = true;
+      crepe.editor.action(replaceAll(makeImagesLoadable(currentMarkdown, currentNote.folder ?? '')));
+      loadingNote = false;
+      crepe.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => true }); });
+    }
+  }
+
+  async function toggleDiffMode() {
+    diffMode = !diffMode;
+    if (!crepe || !currentNote || !historySelectedSha) return;
+    if (diffMode) {
+      // switching to diff: hide editor (no action needed, class:hidden handles it)
+    } else {
+      // switching back to editor: load historical content into editor
+      loadingNote = true;
+      crepe.editor.action(replaceAll(makeImagesLoadable(stripFrontmatter(historyContent), currentNote.folder ?? '')));
+      loadingNote = false;
+      crepe.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => false }); });
+    }
+  }
 
   // Rename state
   let renamingNoteId: string | null = $state(null);
@@ -153,6 +254,7 @@
   }
 
   function loadNote(note: Note) {
+    if (historyMode) { historyMode = false; historySelectedSha = null; historyCommits = []; }
     if (saveTimer && currentNote && currentNote.id !== note.id) {
       clearTimeout(saveTimer);
       saveTimer = null;
@@ -164,6 +266,7 @@
     const display = makeImagesLoadable(note.content, note.folder ?? '');
     loadingNote = true;
     crepe?.editor.action(replaceAll(display));
+    crepe?.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => true }); });
     loadingNote = false;
     // Ensure ancestor folders are expanded so the note is visible in the sidebar
     if (note.folder) expandPath(note.folder);
@@ -857,27 +960,105 @@
           />
         </div>
         <div class="toolbar-right">
-          {#if saving}<span class="saving-indicator">saving…</span>{/if}
-          <button
-            class="icon-btn {rawMode ? 'active' : ''}"
-            onclick={toggleRaw}
-            title={rawMode ? 'Switch to WYSIWYG' : 'Switch to Raw'}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-          </button>
+          {#if historyMode}
+            {#if historyLoading}
+              <span class="saving-indicator">Loading history…</span>
+            {:else if historyCommits.length === 0}
+              <span class="saving-indicator">No history found</span>
+            {:else}
+              <select
+                class="history-select"
+                onchange={(e) => {
+                  const sha = (e.target as HTMLSelectElement).value;
+                  if (sha) {
+                    void selectHistoryCommit(sha);
+                  } else {
+                    diffMode = false;
+                    historyContent = '';
+                    historySelectedSha = null;
+                    if (crepe && currentNote) {
+                      loadingNote = true;
+                      crepe.editor.action(replaceAll(makeImagesLoadable(currentMarkdown, currentNote.folder ?? '')));
+                      loadingNote = false;
+                      crepe.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => true }); });
+                    }
+                  }
+                }}
+                disabled={historyContentLoading}
+              >
+                <option value="" selected={!historySelectedSha}>Current version</option>
+                {#each historyCommits as commit}
+                  <option value={commit.sha} selected={historySelectedSha === commit.sha}>
+                    {fmtHistoryDate(commit.date)} — {commit.message.replace(/^sync:\s*/i, '').slice(0, 40)}
+                  </option>
+                {/each}
+              </select>
+            {/if}
+            {#if historySelectedSha}
+              <button
+                class="icon-btn {diffMode ? 'active' : ''}"
+                onclick={toggleDiffMode}
+                title={diffMode ? 'Show rendered' : 'Show diff vs current'}
+                disabled={historyContentLoading}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7m0-18H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7m0-18v18"/></svg>
+              </button>
+            {/if}
+            <button class="icon-btn active" onclick={closeHistory} title="Exit history">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          {:else}
+            {#if saving}<span class="saving-indicator">saving…</span>{/if}
+            <button
+              class="icon-btn"
+              onclick={openHistory}
+              title="Version history"
+              disabled={!currentNote}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </button>
+            <button
+              class="icon-btn {rawMode ? 'active' : ''}"
+              onclick={toggleRaw}
+              title={rawMode ? 'Switch to WYSIWYG' : 'Switch to Raw'}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            </button>
+          {/if}
         </div>
       </div>
     {/if}
 
-    <div class="milkdown-wrapper" class:hidden={!currentNote || rawMode} bind:this={editorEl}></div>
-
-    <textarea
-      class="raw-editor"
-      class:hidden={!currentNote || !rawMode}
-      bind:value={currentMarkdown}
-      oninput={() => { if (currentNote) scheduleSave(); }}
-      spellcheck={false}
-    ></textarea>
+    <div class="editor-body">
+      <div class="editor-content">
+        {#if historyMode && historySelectedSha}
+          <div class="history-banner">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Viewing {fmtHistoryDate(historyCommits.find(c => c.sha === historySelectedSha)?.date ?? '')} — read only
+            <button class="history-banner-back" onclick={closeHistory}>← Current</button>
+          </div>
+        {/if}
+        {#if diffMode && historySelectedSha && historyContent}
+          {@const diffChunks = buildDiffLines(stripFrontmatter(historyContent), currentMarkdown)}
+          <div class="diff-view">
+            {#each diffChunks as line}
+              <div class="diff-line diff-{line.type}">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}{line.text}</div>
+            {/each}
+            {#if diffChunks.every(l => l.type === 'ctx')}
+              <div class="diff-identical">No differences</div>
+            {/if}
+          </div>
+        {/if}
+        <div class="milkdown-wrapper" class:hidden={!currentNote || rawMode || (diffMode && !!historySelectedSha)} bind:this={editorEl}></div>
+        <textarea
+          class="raw-editor"
+          class:hidden={!currentNote || !rawMode || historyMode}
+          bind:value={currentMarkdown}
+          oninput={() => { if (currentNote) scheduleSave(); }}
+          spellcheck={false}
+        ></textarea>
+      </div>
+    </div>
 
     {#if !currentNote}
       <div class="no-doc">
@@ -1063,8 +1244,60 @@
   .icon-btn.active { background: var(--accent-deep); color: var(--accent-ltr); }
 
   /* ── Milkdown wrapper ── */
+  /* Editor body — wraps content + optional history panel side-by-side */
+  .editor-body { flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden; }
+  .editor-content { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
   .milkdown-wrapper { flex: 1; overflow-y: auto; min-height: 0; }
   .milkdown-wrapper.hidden { display: none; }
+
+  /* History version dropdown */
+  .history-select {
+    background: var(--surface-alt); border: 1px solid var(--border-2); border-radius: 7px;
+    color: var(--text-2); padding: 4px 28px 4px 10px; font-size: 0.78rem; outline: none;
+    cursor: pointer; max-width: 280px;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center;
+  }
+  .history-select:focus { border-color: var(--accent); }
+  .history-select:disabled { opacity: 0.5; cursor: default; }
+
+  /* Diff view */
+  .diff-view {
+    flex: 1; min-height: 0; overflow-y: auto;
+    background: var(--bg-deep);
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.82rem; line-height: 1.65;
+    padding: 8px 0;
+  }
+  .diff-line {
+    display: block; padding: 1px 32px; white-space: pre-wrap; word-break: break-all;
+  }
+  .diff-add { background: color-mix(in srgb, var(--green) 12%, transparent); color: var(--green); }
+  .diff-del { background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red); }
+  .diff-ctx { color: var(--text-6); }
+  .diff-identical { padding: 24px 32px; color: var(--text-7); font-size: 0.82rem; font-style: italic; }
+
+  /* Banner shown above editor when viewing a historical version */
+  .history-banner {
+    display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    padding: 6px 16px; background: var(--accent-bg); border-bottom: 1px solid var(--accent);
+    font-size: 0.78rem; color: var(--accent-lt);
+  }
+  .history-banner-back {
+    margin-left: auto; background: transparent; border: 1px solid var(--accent);
+    color: var(--accent-lt); border-radius: 6px; padding: 2px 10px;
+    font-size: 0.75rem; cursor: pointer;
+  }
+  .history-banner-back:hover { background: var(--accent-bg-2); }
+
+  /* Placeholder when history panel is open but no commit selected */
+  .history-placeholder {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 10px; color: var(--text-7);
+  }
+  .history-placeholder p { font-size: 0.82rem; }
 
   /* Override Crepe nord-dark variables to match the app's indigo palette */
   :global(.milkdown) {

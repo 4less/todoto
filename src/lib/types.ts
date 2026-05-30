@@ -7,6 +7,7 @@ export interface Note {
   updated_at: string;
   pinned: boolean;
   tags: string[];
+  file_path?: string;
 }
 
 export interface WorkSession {
@@ -44,6 +45,12 @@ export interface SyncResult {
   success: boolean;
   message: string;
   timestamp: string;
+}
+
+export interface CommitInfo {
+  sha: string;
+  date: string;    // ISO 8601
+  message: string;
 }
 
 export type View = 'home' | 'tasks' | 'docs' | 'search';

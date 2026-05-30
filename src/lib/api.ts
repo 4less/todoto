@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Note, Todo, Settings, SyncResult } from './types';
+import type { Note, Todo, Settings, SyncResult, CommitInfo } from './types';
 
 export async function saveTaskNoteImage(id: string, blob: Blob): Promise<string> {
   // FileReader is the only reliable way to get base64 from large blobs without
@@ -39,4 +39,7 @@ export const api = {
 
   syncNow: () => invoke<SyncResult>('sync_now'),
   getLastSync: () => invoke<string | null>('get_last_sync'),
+
+  getNoteHistory: (path: string) => invoke<CommitInfo[]>('get_note_history', { path }),
+  getNoteAtCommit: (path: string, sha: string) => invoke<string>('get_note_at_commit', { path, sha }),
 };

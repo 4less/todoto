@@ -29,6 +29,9 @@ export const api = {
       todo: {
         id: '', done: false, priority: 'medium', due_date: null, tags: [],
         started_at: null, finished_at: null, work_sessions: [], notes: null,
+        parent_id: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
         ...todo,
       },
     }),

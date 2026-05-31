@@ -11,7 +11,7 @@
   import { diffLines } from 'diff';
   import { commandsCtx, editorViewCtx } from '@milkdown/kit/core';
   import { setBlockTypeCommand, codeBlockSchema, inlineCodeSchema } from '@milkdown/kit/preset/commonmark';
-  import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
+  import { Plugin, PluginKey, TextSelection } from '@milkdown/kit/prose/state';
   import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
 
   // ── Filter state (persisted in global stores) ─────────────────────────────
@@ -69,6 +69,10 @@
   let notesHistoryContentLoading = $state(false);
   let notesHistoryContent = $state('');
   let notesDiffMode = $state(false);
+
+  // ── Subtask state ─────────────────────────────────────────────────────────
+  let addingChildFor: string | null = $state(null);
+  let newChildTitle = $state('');
 
   function fmtHistoryDate(iso: string): string {
     const d = new Date(iso);
@@ -163,6 +167,7 @@
   let filtered = $derived(
     $todos
       .filter((t) => {
+        if (t.parent_id) return false; // children always appear under their parent
         if ($taskFilterStatus === 'pending' && t.done) return false;
         if ($taskFilterStatus === 'done' && !t.done) return false;
         if ($taskFilterPriority && t.priority !== $taskFilterPriority) return false;
@@ -197,6 +202,7 @@
 
   let pendingTodos = $derived(filtered.filter((t) => !t.done));
   let doneTodos = $derived(filtered.filter((t) => t.done));
+  let rootTodoCount = $derived($todos.filter((t) => !t.parent_id).length);
 
   let ungroupedPending = $derived(
     $taskFilterGroupByTags.length > 0
@@ -282,6 +288,19 @@
     todos.update((ts) => [created, ...ts]);
     newTitle = ''; newPriority = 'medium'; newDue = ''; newTagInput = '';
     showForm = false;
+  }
+
+  async function addChildTodo(parent: Todo) {
+    if (!newChildTitle.trim()) return;
+    const created = await api.saveTodo({
+      title: newChildTitle.trim(),
+      priority: parent.priority,
+      tags: [...parent.tags],
+      parent_id: parent.id,
+    });
+    todos.update((ts) => [...ts, created]);
+    newChildTitle = '';
+    addingChildFor = null;
   }
 
   function startEdit(todo: Todo) {
@@ -659,6 +678,9 @@
 
     const captionObs = new MutationObserver(() => upgradeCaptions(el));
 
+    let rightAddBtn: HTMLButtonElement | null = null;
+    let posHandleObs: MutationObserver | null = null;
+
     void c.create().then(() => {
       if (!destroyed) {
         instance = c;
@@ -673,12 +695,76 @@
         el.addEventListener('paste', handlePaste, true);
         captionObs.observe(el, { childList: true, subtree: true });
         upgradeCaptions(el);
+
+        // Mirrored + button on the right edge. Visibility via CSS :hover on the
+        // wrapper — no observer needed. Position tracks the floating handle via
+        // a MutationObserver as a best-effort enhancement.
+        rightAddBtn = document.createElement('button');
+        rightAddBtn.className = 'mk-right-add';
+        rightAddBtn.title = 'Add block below';
+        rightAddBtn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+        el.appendChild(rightAddBtn);
+
+        const capturedBtn = rightAddBtn;
+        capturedBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          // When the mouse moves from the editor to this button, Milkdown clears
+          // the "active block" before any click fires, so delegating to the
+          // hidden handle button does nothing. Insert directly via ProseMirror,
+          // then type '/' to open the slash menu just like the original handle does.
+          c.editor.action((ctx) => {
+            const view = ctx.get(editorViewCtx);
+            const { state } = view;
+            const selFrom = state.selection.$from;
+            try {
+              // Position right after the current top-level block (or end of doc).
+              const afterPos = selFrom.depth >= 1 ? selFrom.after(1) : state.doc.content.size;
+              const paragraph = state.schema.nodes.paragraph.createAndFill();
+              if (!paragraph) return;
+              const tr = state.tr.insert(afterPos, paragraph);
+              // Cursor inside the new empty paragraph.
+              tr.setSelection(TextSelection.create(tr.doc, afterPos + 1));
+              view.dispatch(tr.scrollIntoView());
+              // Insert '/' to open the slash menu (same as original + button).
+              view.dispatch(view.state.tr.insertText('/'));
+              view.focus();
+            } catch {}
+          });
+        });
+
+        // Keep top in sync with the handle so the button tracks the active line.
+        function syncTop() {
+          const handle = el.querySelector<HTMLElement>('.milkdown-block-handle');
+          if (!handle || handle.dataset.show !== 'true') return;
+          const handleRect = handle.getBoundingClientRect();
+          const elRect = el.getBoundingClientRect();
+          capturedBtn.style.top = `${handleRect.top - elRect.top + el.scrollTop}px`;
+        }
+
+        // Try to find the handle immediately; fall back to watching the DOM.
+        function tryAttach() {
+          if (posHandleObs) return;
+          const handle = el.querySelector<HTMLElement>('.milkdown-block-handle');
+          if (!handle) return;
+          posHandleObs = new MutationObserver(syncTop);
+          posHandleObs.observe(handle, { attributes: true, attributeFilter: ['data-show', 'style'] });
+          syncTop();
+        }
+        tryAttach();
+        if (!posHandleObs) {
+          const waitObs = new MutationObserver(() => { tryAttach(); if (posHandleObs) waitObs.disconnect(); });
+          waitObs.observe(el, { childList: true, subtree: true });
+        }
       } else void c.destroy();
     });
     return {
       destroy() {
         destroyed = true;
         captionObs.disconnect();
+        posHandleObs?.disconnect();
+        posHandleObs = null;
+        rightAddBtn?.remove();
+        rightAddBtn = null;
         el.removeEventListener('keydown', handleNotesHeadingShortcut);
         el.removeEventListener('paste', handlePaste, true);
         if (notesEditorInstance === instance) notesEditorInstance = null;
@@ -809,6 +895,12 @@
     );
   }
 
+  function childrenMs(todoId: string): number {
+    return $todos
+      .filter((t) => t.parent_id === todoId)
+      .reduce((sum, c) => sum + totalSessionMs(c.work_sessions ?? []), 0);
+  }
+
   function formatDuration(ms: number): string {
     const secs = Math.floor(ms / 1000);
     const h = Math.floor(secs / 3600);
@@ -836,6 +928,10 @@
       if (!showFilters) showFilters = true;
       focusSearchSoon();
     }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+      e.preventDefault();
+      showForm = true;
+    }
     if (e.key === 'Escape' && selectedIds.size > 0) {
       selectedIds = new Set();
       confirmDelete = false;
@@ -850,7 +946,7 @@
   <header class="page-header">
     <div>
       <h1>Tasks</h1>
-      <p class="subtitle">{filtered.length} of {$todos.length} tasks</p>
+      <p class="subtitle">{filtered.length} of {rootTodoCount} tasks</p>
     </div>
     <div class="header-actions">
       {#if $activeTimers.size > 0}
@@ -961,14 +1057,16 @@
     </div>
   {/if}
 
-  {#snippet taskCard(todo: import('$lib/types').Todo)}
+  {#snippet taskCard(todo: import('$lib/types').Todo, isChild: boolean)}
         {@const isTimerActive = $activeTimers.has(todo.id)}
         {@const timerStartMs = $activeTimers.get(todo.id)}
         {@const sessions = todo.work_sessions ?? []}
-        {@const totalMs = totalSessionMs(sessions)}
+        {@const ownMs = totalSessionMs(sessions)}
+        {@const totalMs = isChild ? ownMs : ownMs + childrenMs(todo.id)}
         {@const isSelected = selectedIds.has(todo.id)}
+        {@const hasChildren = !isChild && $todos.some((t) => t.parent_id === todo.id)}
 
-        <div class="task-card {todo.done ? 'done' : ''} {isTimerActive ? 'timer-active' : ''} {isSelected ? 'selected' : ''} {notesOpenId === todo.id ? 'notes-open' : ''}">
+        <div class="task-card {isChild ? 'child-card' : ''} {isChild && notesOpenId === todo.id ? 'child-expanded' : ''} {todo.done ? 'done' : ''} {isTimerActive ? 'timer-active' : ''} {isSelected ? 'selected' : ''} {notesOpenId === todo.id && !hasChildren ? 'notes-open' : ''}">
           {#if editId === todo.id}
             <div class="edit-form">
               <input class="input" bind:value={editTitle} onkeydown={(e) => e.key === 'Enter' && saveEdit(todo)} />
@@ -1033,6 +1131,12 @@
                 {/each}
               </div>
             </div>
+            {#if !isChild}
+              <button class="add-child-icon-btn" title="Add subtask"
+                onclick={(e) => { e.stopPropagation(); addingChildFor = addingChildFor === todo.id ? null : todo.id; newChildTitle = ''; }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+            {/if}
           {/if}
         </div>
 
@@ -1050,8 +1154,40 @@
           </div>
         {/if}
 
+        {#if !isChild}
+          {@const children = $todos.filter((t) => t.parent_id === todo.id)}
+          {#if children.length > 0 || addingChildFor === todo.id}
+            <div class="children-zone">
+              {#each children as child (child.id)}
+                {@render taskCard(child, true)}
+              {/each}
+              {#if addingChildFor === todo.id}
+                <div class="child-add-form">
+                  <input
+                    class="input child-add-input"
+                    placeholder="Subtask title…"
+                    bind:value={newChildTitle}
+                    onkeydown={(e) => {
+                      if (e.key === 'Enter') void addChildTodo(todo);
+                      if (e.key === 'Escape') { addingChildFor = null; newChildTitle = ''; }
+                    }}
+                    autofocus
+                  />
+                  <button class="btn-primary" onclick={() => void addChildTodo(todo)}>Add</button>
+                  <button class="btn-ghost" onclick={() => { addingChildFor = null; newChildTitle = ''; }}>Cancel</button>
+                </div>
+              {:else if children.length > 0}
+                <button class="add-child-bottom-btn"
+                  onclick={() => { addingChildFor = todo.id; newChildTitle = ''; }}>
+                  + Add subtask
+                </button>
+              {/if}
+            </div>
+          {/if}
+        {/if}
+
         {#if notesOpenId === todo.id}
-          <div class="notes-panel">
+          <div class="notes-panel {hasChildren ? 'notes-panel-detached' : ''} {isChild ? 'child-expanded' : ''}">
             <div class="notes-panel-header">
               <span class="notes-panel-title">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
@@ -1151,7 +1287,7 @@
 
   {#if focusMode && focusTodo}
     <div class="focus-view">
-      {@render taskCard(focusTodo)}
+      {@render taskCard(focusTodo, !!focusTodo.parent_id)}
     </div>
   {:else}
   <div class="task-list">
@@ -1164,7 +1300,7 @@
           <span>#{groupTag} · {groupTodos.length}</span>
         </div>
         {#each groupTodos as todo (todo.id + '::' + groupTag)}
-          {@render taskCard(todo)}
+          {@render taskCard(todo, false)}
         {/each}
       {/each}
       {#if ungroupedPending.length > 0}
@@ -1172,7 +1308,7 @@
           <span>Other · {ungroupedPending.length}</span>
         </div>
         {#each ungroupedPending as todo (todo.id + '::other')}
-          {@render taskCard(todo)}
+          {@render taskCard(todo, false)}
         {/each}
       {/if}
       {#if doneTodos.length > 0}
@@ -1180,7 +1316,7 @@
           <span>Completed · {doneTodos.length}</span>
         </div>
         {#each doneTodos as todo (todo.id)}
-          {@render taskCard(todo)}
+          {@render taskCard(todo, false)}
         {/each}
       {/if}
     {:else}
@@ -1189,7 +1325,7 @@
         <div class="empty">All tasks completed.</div>
       {/if}
       {#each pendingTodos as todo (todo.id)}
-        {@render taskCard(todo)}
+        {@render taskCard(todo, false)}
       {/each}
 
       {#if doneTodos.length > 0}
@@ -1197,7 +1333,7 @@
           <span>Completed · {doneTodos.length}</span>
         </div>
         {#each doneTodos as todo (todo.id)}
-          {@render taskCard(todo)}
+          {@render taskCard(todo, false)}
         {/each}
       {/if}
     {/if}
@@ -1208,7 +1344,8 @@
   {#if selectedIds.size > 0}
     <div class="selection-bar">
       {#if confirmDelete}
-        <span class="sel-count">Delete {selectedIds.size} task{selectedIds.size > 1 ? 's' : ''}?</span>
+        {@const delChildCount = [...selectedIds].reduce((n, id) => n + $todos.filter((t) => t.parent_id === id).length, 0)}
+        <span class="sel-count">Delete {selectedIds.size} task{selectedIds.size > 1 ? 's' : ''}{delChildCount > 0 ? ` and ${delChildCount} subtask${delChildCount > 1 ? 's' : ''}` : ''}?</span>
         <div class="sel-spacer"></div>
         <button class="sel-btn danger" onclick={deleteSelected}>Confirm</button>
         <button class="sel-btn ghost" onclick={() => (confirmDelete = false)}>Cancel</button>
@@ -1228,6 +1365,12 @@
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               Copy
             </button>
+            {#if !selTodo.parent_id}
+              <button class="sel-btn" onclick={() => { addingChildFor = selTodo!.id; newChildTitle = ''; }} title="Add subtask">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                Subtask
+              </button>
+            {/if}
             <button
               class="sel-btn {notesOpenId === selTodo.id ? 'notes-active' : ''}"
               onclick={() => notesOpenId === selTodo!.id ? closeNotes() : openNotes(selTodo!)}
@@ -1606,7 +1749,32 @@
   }
 
   /* Notes Milkdown editor */
-  .notes-editor-wrap { min-height: 140px; }
+  .notes-editor-wrap { min-height: 140px; position: relative; }
+
+  /* Mirrored + button on the right edge of the notes editor.
+     Visibility driven by CSS hover — no JS observer needed for show/hide.
+     top is updated by JS to track the active line when possible. */
+  :global(.notes-editor-wrap .mk-right-add) {
+    position: absolute;
+    right: 6px;
+    top: 10px; /* fallback; overridden by JS when handle is tracked */
+    width: 28px; height: 28px;
+    padding: 2px;
+    border-radius: 4px;
+    background: transparent; border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-7);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.15s, background 0.12s, color 0.12s;
+    z-index: 10;
+  }
+  :global(.notes-editor-wrap:hover .mk-right-add) {
+    opacity: 1; pointer-events: auto;
+  }
+  :global(.notes-editor-wrap .mk-right-add:hover) {
+    background: var(--accent-bg);
+    color: var(--accent-lt);
+  }
 
   :global(.notes-editor-wrap .milkdown) {
     --crepe-color-background: var(--bg-deep);
@@ -1652,6 +1820,8 @@
     caret-color: var(--text-2) !important;
   }
   :global(.notes-editor-wrap .milkdown) { position: relative; }
+  /* Hide original + button from the handle; keep only ⠿ drag dots */
+  :global(.notes-editor-wrap .milkdown-block-handle .operation-item:first-child) { display: none; }
 
   /* Block code */
   :global(.notes-editor-wrap .ProseMirror pre) {
@@ -1724,6 +1894,81 @@
   /* Notes button active state in selection bar */
   .sel-btn.notes-active { color: var(--accent-lt); border-color: var(--accent); background: var(--accent-bg); }
   .sel-btn.notes-active:hover { background: var(--accent-bg-2); }
+
+  /* ── Subtasks ──────────────────────────────────────────────────────────── */
+
+  /* Child task cards */
+  .task-card.child-card {
+    padding: 7px 12px;
+    background: var(--bg-deep);
+    border-color: var(--border);
+  }
+  .task-card.child-card:hover { border-color: var(--border-2); }
+  .task-card.child-card.selected { border-color: var(--accent); background: var(--accent-bg); }
+  .task-card.child-card .task-title { font-size: 0.85rem; }
+
+  /* Break a child card/panel out of the children-zone indent when notes are open.
+     42px = children-zone margin-left(30) + border-left(2) + padding-left(10) */
+  .children-zone .child-expanded {
+    box-sizing: border-box;
+    margin-left: -42px;
+    width: calc(100% + 42px);
+  }
+
+  /* The indented zone that wraps child cards */
+  .children-zone {
+    margin-left: 30px;
+    padding-left: 10px;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-top: 3px;
+    padding-bottom: 4px;
+  }
+
+  /* "Add subtask" text button at bottom of filled children-zone */
+  .add-child-bottom-btn {
+    background: none; border: none; cursor: pointer;
+    font-size: 0.7rem; color: var(--text-7);
+    padding: 3px 0 1px; text-align: left;
+    transition: color 0.12s;
+  }
+  .add-child-bottom-btn:hover { color: var(--accent-lt); }
+
+  /* Inline new-child form */
+  .child-add-form {
+    display: flex; gap: 6px; align-items: center;
+    padding: 3px 0;
+  }
+  .child-add-input {
+    font-size: 0.82rem !important;
+    padding: 4px 10px !important;
+    min-width: 0;
+  }
+
+  /* + icon button on the card (shown on hover/select) */
+  .add-child-icon-btn {
+    opacity: 0; flex-shrink: 0; align-self: flex-start; margin-top: 1px;
+    width: 22px; height: 22px; border-radius: 5px;
+    border: 1px solid transparent; background: transparent;
+    color: var(--text-7); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.12s;
+  }
+  .task-card:hover .add-child-icon-btn,
+  .task-card.selected .add-child-icon-btn { opacity: 1; }
+  .add-child-icon-btn:hover {
+    border-color: var(--accent); color: var(--accent-lt);
+    background: var(--accent-bg); opacity: 1;
+  }
+
+  /* Notes panel when it has a children-zone above it (no seamless merge) */
+  .notes-panel.notes-panel-detached {
+    border-top: 1px solid var(--accent);
+    border-radius: 0 0 10px 10px;
+    margin-top: 2px;
+  }
 
   /* Notes diff view */
   .notes-diff-view {

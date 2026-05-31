@@ -57,6 +57,8 @@ pub struct Todo {
     pub notes: Option<String>,
     #[serde(default)]
     pub note_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1257,13 +1259,21 @@ fn delete_todo(state: State<Mutex<AppState>>, id: String) -> Result<(), String> 
     let state = state.lock().unwrap();
     let mut todos = load_todos(&state.settings);
     let repo_base = PathBuf::from(&state.settings.repo_path);
-    if let Some(todo) = todos.iter().find(|t| t.id == id) {
-        let note_file = todo.note_path.as_ref()
-            .map(|p| repo_base.join(p))
-            .unwrap_or_else(|| task_note_path(&repo_base, &id));
-        let _ = fs::remove_file(note_file);
+
+    // Delete note files for the target and all its children.
+    let ids_to_delete: Vec<String> = todos.iter()
+        .filter(|t| t.id == id || t.parent_id.as_deref() == Some(id.as_str()))
+        .map(|t| t.id.clone())
+        .collect();
+    for del_id in &ids_to_delete {
+        if let Some(todo) = todos.iter().find(|t| t.id == *del_id) {
+            let note_file = todo.note_path.as_ref()
+                .map(|p| repo_base.join(p))
+                .unwrap_or_else(|| task_note_path(&repo_base, del_id));
+            let _ = fs::remove_file(note_file);
+        }
     }
-    todos.retain(|t| t.id != id);
+    todos.retain(|t| !ids_to_delete.contains(&t.id));
     save_todos(&state.settings, &todos)
 }
 

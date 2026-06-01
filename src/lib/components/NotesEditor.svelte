@@ -4,7 +4,7 @@
   import { diffLines } from 'diff';
   import { commandsCtx, editorViewCtx } from '@milkdown/kit/core';
   import { setBlockTypeCommand, codeBlockSchema } from '@milkdown/kit/preset/commonmark';
-  import { Plugin, PluginKey, TextSelection } from '@milkdown/kit/prose/state';
+  import { Plugin, PluginKey, TextSelection, NodeSelection } from '@milkdown/kit/prose/state';
   import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
   import { convertFileSrc, invoke } from '@tauri-apps/api/core';
   import { api, saveTaskNoteImage } from '$lib/api';
@@ -333,7 +333,24 @@
 
     const resize = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
 
+    // Clear any NodeSelection on the image-block BEFORE block stops propagation.
+    // Listener order matters: stopImmediatePropagation kills later handlers on the
+    // same element, so this must be registered first.
+    ta.addEventListener('mousedown', () => {
+      if (!notesEditorInstance) return;
+      notesEditorInstance.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        if (view.state.selection instanceof NodeSelection) {
+          const pos = view.state.selection.to;
+          try {
+            view.dispatch(view.state.tr.setSelection(TextSelection.near(view.state.doc.resolve(pos))));
+          } catch {}
+        }
+      });
+    });
+
     // Prevent ProseMirror from intercepting events while the caption is focused.
+    // Must be registered AFTER the NodeSelection handler above.
     const block = (e: Event) => e.stopImmediatePropagation();
     for (const type of ['mousedown','mouseup','mousemove','pointerdown','pointerup','pointermove','click','keydown','keyup','keypress','beforeinput','compositionstart','compositionend','paste','cut','copy']) {
       ta.addEventListener(type, block);
@@ -405,10 +422,8 @@
       });
     }
     el.addEventListener('keydown', headingKeyHandler, true);
-    // Prevent the image-block (draggable="true" via ProseMirror) from being dragged
-    // when the pointer is on a caption textarea. The textarea itself keeps draggable=false
-    // so the browser never enters "drag mode" — text selection works normally. The
-    // dragstart fires on the image-block ancestor; we stop it when a caption has focus.
+    // Prevent drag when the caption textarea has focus — the browser would otherwise
+    // walk up to the image-block's draggable="true" ancestor and move the whole block.
     el.addEventListener('dragstart', (e) => {
       const active = document.activeElement;
       if (active instanceof HTMLTextAreaElement && active.classList.contains('caption-input')) {

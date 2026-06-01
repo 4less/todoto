@@ -7,9 +7,11 @@
   type CalMode = 'minutes' | 'tasks';
   let calMode: CalMode = $state('minutes');
 
-  const CELL = 11;        // px — cell size
-  const GAP  = 3;         // px — gap between cells
-  const COL  = CELL + GAP; // 14px per column
+  const GAP  = 4;
+  const DAY_LBL_W = 28;
+  let calContainerWidth = $state(0);
+  const CELL = $derived(Math.max(8, Math.floor((calContainerWidth - DAY_LBL_W - 52 * GAP) / 53)));
+  const COL  = $derived(CELL + GAP);
 
   function localDateStr(d: Date): string {
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -161,11 +163,11 @@
       </div>
     </div>
 
-    <div class="cal-scroll">
+    <div class="cal-scroll" bind:clientWidth={calContainerWidth}>
       <!-- Month labels -->
       <div class="cal-months-row">
         <div class="day-lbl-spacer"></div>
-        <div class="cal-months-inner">
+        <div class="cal-months-inner" style="width: {53 * COL}px">
           {#each calGrid.months as ml}
             <span class="cal-month-lbl" style="left: {ml.idx * COL}px">{ml.text}</span>
           {/each}
@@ -174,9 +176,9 @@
 
       <!-- Day labels + grid -->
       <div class="cal-body-row">
-        <div class="cal-day-lbls">
-          {#each ['', 'Mon', '', 'Wed', '', 'Fri', ''] as d}
-            <span>{d}</span>
+        <div class="cal-day-lbls" style="gap: {GAP}px">
+          {#each ['Mon', '', 'Wed', '', 'Fri', '', ''] as d}
+            <span style="height: {CELL}px; line-height: {CELL}px">{d}</span>
           {/each}
         </div>
         <div class="cal-grid" style="gap: {GAP}px">
@@ -342,7 +344,7 @@
   .mode-btn.active { background: var(--accent-bg); color: var(--accent-ltr); }
   .mode-btn:hover:not(.active) { background: var(--surface-alt); color: var(--text-3); }
 
-  .cal-scroll { overflow-x: auto; padding-bottom: 2px; }
+  .cal-scroll { padding-bottom: 2px; width: 100%; }
 
   /* Month label row */
   .cal-months-row {
@@ -351,10 +353,11 @@
     margin-bottom: 4px;
   }
   .day-lbl-spacer { width: 28px; flex-shrink: 0; }
+  .cal-day-lbls { flex-shrink: 0; }
   .cal-months-inner {
     position: relative;
     height: 16px;
-    flex: 1;
+    flex-shrink: 0;
   }
   .cal-month-lbl {
     position: absolute;
@@ -372,16 +375,13 @@
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
-    padding-top: 1px;
   }
   .cal-day-lbls span {
-    height: 11px;
-    line-height: 11px;
     font-size: 0.65rem;
     color: var(--text-6);
     text-align: right;
     padding-right: 4px;
+    flex-shrink: 0;
   }
 
   .cal-grid { display: flex; }

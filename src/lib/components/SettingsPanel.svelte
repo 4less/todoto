@@ -61,19 +61,29 @@
       <h3>Appearance</h3>
       <div class="field">
         <label>Theme</label>
-        <div class="theme-row">
-          {#each [['system','Auto'], ['light','Light'], ['dark','Dark']] as [val, label]}
+        <div class="theme-grid">
+          {#each [
+            ['system',   'Auto',     'system'],
+            ['light',    'Light',    'light'],
+            ['dark',     'Dark',     'dark'],
+            ['midnight', 'Midnight', 'midnight'],
+            ['forest',   'Forest',   'forest'],
+          ] as [val, label, icon]}
             <button
               class="theme-btn {$theme === val ? 'active' : ''}"
-              onclick={() => theme.set(val as 'system' | 'light' | 'dark')}
+              onclick={() => theme.set(val as 'system' | 'light' | 'dark' | 'midnight' | 'forest')}
               type="button"
             >
-              {#if val === 'system'}
+              {#if icon === 'system'}
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
-              {:else if val === 'light'}
+              {:else if icon === 'light'}
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-              {:else}
+              {:else if icon === 'dark'}
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              {:else if icon === 'midnight'}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              {:else if icon === 'forest'}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8C8 10 5.9 16.17 3.82 19.5c.5.7 1.18.5 1.68 0L12 13l6.18 6.5c.5.5 1.18.7 1.68 0C17.32 16.17 16 10 17 8z"/><path d="M12 13V22"/></svg>
               {/if}
               {label}
             </button>
@@ -212,7 +222,7 @@
   }
   .toggle-btn:hover { border-color: var(--text-8); color: var(--text-2); }
 
-  .theme-row { display: flex; gap: 6px; }
+  .theme-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .theme-btn {
     flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
     padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-2);

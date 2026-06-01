@@ -23,7 +23,7 @@
   });
 
   // ── Theme ─────────────────────────────────────────────────────────────────
-  function applyTheme(t: 'system' | 'light' | 'dark') {
+  function applyTheme(t: 'system' | 'light' | 'dark' | 'midnight' | 'forest') {
     const resolved = t === 'system'
       ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
       : t;
@@ -31,7 +31,7 @@
   }
 
   // Initialize from localStorage before first render
-  const savedTheme = localStorage.getItem('todoto-theme') as 'system' | 'light' | 'dark' | null;
+  const savedTheme = localStorage.getItem('todoto-theme') as 'system' | 'light' | 'dark' | 'midnight' | 'forest' | null;
   if (savedTheme) theme.set(savedTheme);
   applyTheme(savedTheme ?? 'system');
 

@@ -94,23 +94,101 @@
   --red-deep:     #ef4444;
 }
 
-/* Caption textarea — replaces Milkdown's single-line <input> for multiline captions */
-.notes-editor-wrap textarea.caption-input {
-  display: block;
-  width: 100%;
-  text-align: center;
-  resize: none;
-  overflow: hidden;
-  background: transparent;
-  border: none;
-  outline: none;
-  padding: 0;
-  margin: 4px auto;
-  font-family: inherit;
-  font-size: inherit;
-  color: inherit;
-  line-height: 1.5;
-  word-break: break-word;
-  box-sizing: border-box;
-  min-height: 1.5em;
+:root[data-theme="midnight"] {
+  color-scheme: dark;
+
+  /* Surfaces — deep navy blue */
+  --bg-deep:      #020817;
+  --bg:           #050d1f;
+  --surface:      #0a1628;
+  --surface-alt:  #0f1e35;
+  --border:       #152440;
+  --border-2:     #1e3257;
+
+  /* Accent-tinted surfaces */
+  --accent-bg:    #0a1a40;
+  --accent-bg-2:  #12265a;
+
+  /* Status-tinted surfaces */
+  --green-surface: #1e2a1e;
+  --green-bg:      #0d2018;
+  --green-border:  #1a4a2a;
+
+  /* Text — same cool scale */
+  --text-1: #f1f5f9;
+  --text-2: #e2e8f0;
+  --text-3: #94a3b8;
+  --text-4: #9ca3af;
+  --text-5: #6b7280;
+  --text-6: #64748b;
+  --text-7: #475569;
+  --text-8: #4b5563;
+
+  /* Accent — electric blue */
+  --accent:        #3b82f6;
+  --accent-dk:     #2563eb;
+  --accent-deep:   #1d4ed8;
+  --accent-lt:     #60a5fa;
+  --accent-ltr:    #93c5fd;
+  --accent-purple: #818cf8;
+
+  /* Status */
+  --green:        #34d399;
+  --yellow:       #fbbf24;
+  --yellow-bg:    #2a1f00;
+  --red:          #f87171;
+  --red-bg:       #2a0e0e;
+  --red-border:   #3a1414;
+  --red-border-2: #4a1a1a;
+  --red-deep:     #7f1d1d;
 }
+
+:root[data-theme="forest"] {
+  color-scheme: dark;
+
+  /* Surfaces — deep forest green */
+  --bg-deep:      #020d06;
+  --bg:           #04120a;
+  --surface:      #071a10;
+  --surface-alt:  #0a2218;
+  --border:       #0f3020;
+  --border-2:     #164030;
+
+  /* Accent-tinted surfaces */
+  --accent-bg:    #0a2a18;
+  --accent-bg-2:  #103820;
+
+  /* Status-tinted surfaces */
+  --green-surface: #1a2e1a;
+  --green-bg:      #0a2010;
+  --green-border:  #16481e;
+
+  /* Text — same cool scale */
+  --text-1: #f1f5f9;
+  --text-2: #e2e8f0;
+  --text-3: #94a3b8;
+  --text-4: #9ca3af;
+  --text-5: #6b7280;
+  --text-6: #64748b;
+  --text-7: #475569;
+  --text-8: #4b5563;
+
+  /* Accent — emerald */
+  --accent:        #10b981;
+  --accent-dk:     #059669;
+  --accent-deep:   #047857;
+  --accent-lt:     #34d399;
+  --accent-ltr:    #6ee7b7;
+  --accent-purple: #a78bfa;
+
+  /* Status */
+  --green:        #34d399;
+  --yellow:       #fbbf24;
+  --yellow-bg:    #2a1f00;
+  --red:          #f87171;
+  --red-bg:       #2a0e0e;
+  --red-border:   #3a1414;
+  --red-border-2: #4a1a1a;
+  --red-deep:     #7f1d1d;
+}
+

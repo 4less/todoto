@@ -1,18 +1,11 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, settings } from '$lib/stores';
-  import { api, saveTaskNoteImage } from '$lib/api';
-  import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-  import type { Todo, WorkSession, CommitInfo } from '$lib/types';
+  import { api } from '$lib/api';
+  import type { Todo, WorkSession } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
   import DatePicker from '$lib/components/DatePicker.svelte';
-  import { Crepe, CrepeFeature } from '@milkdown/crepe';
-  import { replaceAll } from '@milkdown/utils';
-  import { diffLines } from 'diff';
-  import { commandsCtx, editorViewCtx } from '@milkdown/kit/core';
-  import { setBlockTypeCommand, codeBlockSchema, inlineCodeSchema } from '@milkdown/kit/preset/commonmark';
-  import { Plugin, PluginKey, TextSelection } from '@milkdown/kit/prose/state';
-  import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
+  import NotesEditor from '$lib/components/NotesEditor.svelte';
 
   // ── Filter state (persisted in global stores) ─────────────────────────────
   let showFilters = $state(false);
@@ -38,115 +31,50 @@
 
   // ── Timer state ───────────────────────────────────────────────────────────
   let expandedSessions: string | null = $state(null);
+  let editingSession: { todoId: string; index: number; start: string; end: string } | null = $state(null);
+
+  function toDatetimeLocal(iso: string): string {
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  async function saveSessionEdit(todo: Todo) {
+    if (!editingSession || editingSession.todoId !== todo.id) return;
+    const sessions = [...(todo.work_sessions ?? [])];
+    sessions[editingSession.index] = {
+      start: new Date(editingSession.start).toISOString(),
+      end:   new Date(editingSession.end).toISOString(),
+    };
+    const updated = await api.saveTodo({ ...todo, work_sessions: sessions });
+    todos.update((ts) => ts.map((t) => t.id === updated.id ? updated : t));
+    editingSession = null;
+  }
+
+  async function deleteSession(todo: Todo, index: number) {
+    const sessions = (todo.work_sessions ?? []).filter((_, i) => i !== index);
+    const updated = await api.saveTodo({ ...todo, work_sessions: sessions });
+    todos.update((ts) => ts.map((t) => t.id === updated.id ? updated : t));
+  }
   let tick = $state(0);
   let tickInterval: ReturnType<typeof setInterval> | null = null;
 
   // ── Focus mode ────────────────────────────────────────────────────────────
   let focusMode = $state(false);
-  let focusTodoId = $derived([...$activeTimers.keys()][0] ?? null);
+  let focusTodoId = $state<string | null>(null);
   let focusTodo = $derived(focusTodoId ? ($todos.find((t) => t.id === focusTodoId) ?? null) : null);
 
-  $effect(() => {
-    if ($activeTimers.size === 0) focusMode = false;
-  });
   $effect(() => {
     if (focusMode && focusTodo && notesOpenId !== focusTodo.id) openNotes(focusTodo);
   });
 
   // ── Notes state ───────────────────────────────────────────────────────────
   let notesOpenId: string | null = $state(null);
-  let notesContent: string = $state('');
-  let notesRawMode = $state(false);
-  let notesSaveTimer: ReturnType<typeof setTimeout> | null = null;
-  let notesEditorInstance: Crepe | null = null;
-  let notesEditorLoading = false;
-
-  // ── Notes history state ───────────────────────────────────────────────────
-  let notesHistoryMode = $state(false);
-  let notesHistoryCommits = $state<CommitInfo[]>([]);
-  let notesHistorySha = $state<string | null>(null);
-  let notesHistoryLoading = $state(false);
-  let notesHistoryContentLoading = $state(false);
-  let notesHistoryContent = $state('');
-  let notesDiffMode = $state(false);
 
   // ── Subtask state ─────────────────────────────────────────────────────────
   let addingChildFor: string | null = $state(null);
+  let collapsedChildren: Set<string> = $state(new Set());
   let newChildTitle = $state('');
-
-  function fmtHistoryDate(iso: string): string {
-    const d = new Date(iso);
-    return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  }
-
-  function buildDiffLines(oldText: string, newText: string) {
-    const chunks = diffLines(oldText, newText);
-    const result: Array<{ type: 'add' | 'del' | 'ctx'; text: string }> = [];
-    for (const chunk of chunks) {
-      const lines = chunk.value.replace(/\n$/, '').split('\n');
-      const type = chunk.added ? 'add' : chunk.removed ? 'del' : 'ctx';
-      for (const text of lines) result.push({ type, text });
-    }
-    return result;
-  }
-
-  async function openNotesHistory() {
-    if (!notesOpenId) return;
-    notesHistoryLoading = true;
-    notesHistoryMode = true;
-    notesHistorySha = null;
-    notesHistoryContent = '';
-    notesDiffMode = false;
-    notesHistoryCommits = [];
-    try {
-      notesHistoryCommits = await api.getNoteHistory(`task-notes/${notesOpenId}.md`);
-    } finally {
-      notesHistoryLoading = false;
-    }
-  }
-
-  async function selectNotesHistoryCommit(sha: string) {
-    if (!notesEditorInstance) return;
-    notesHistorySha = sha;
-    notesHistoryContentLoading = true;
-    try {
-      const raw = await api.getNoteAtCommit(`task-notes/${notesOpenId}.md`, sha);
-      notesHistoryContent = raw;
-      if (!notesDiffMode) {
-        notesEditorLoading = true;
-        notesEditorInstance.editor.action(replaceAll(raw));
-        notesEditorLoading = false;
-        notesEditorInstance.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => false }); });
-      }
-    } finally {
-      notesHistoryContentLoading = false;
-    }
-  }
-
-  function closeNotesHistory() {
-    notesDiffMode = false;
-    notesHistoryContent = '';
-    notesHistoryMode = false;
-    notesHistorySha = null;
-    notesHistoryCommits = [];
-    if (notesEditorInstance) {
-      notesEditorLoading = true;
-      notesEditorInstance.editor.action(replaceAll(notesContent));
-      notesEditorLoading = false;
-      notesEditorInstance.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => true }); });
-    }
-  }
-
-  function toggleNotesDiffMode() {
-    notesDiffMode = !notesDiffMode;
-    if (!notesEditorInstance || !notesHistorySha) return;
-    if (!notesDiffMode) {
-      notesEditorLoading = true;
-      notesEditorInstance.editor.action(replaceAll(notesHistoryContent));
-      notesEditorLoading = false;
-      notesEditorInstance.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => false }); });
-    }
-  }
 
   $effect(() => {
     if ($activeTimers.size > 0) {
@@ -158,7 +86,6 @@
 
   onDestroy(() => {
     if (tickInterval) clearInterval(tickInterval);
-    if (notesSaveTimer) clearTimeout(notesSaveTimer);
   });
 
   // ── Derived ───────────────────────────────────────────────────────────────
@@ -328,11 +255,15 @@
     todos.update((ts) => ts.filter((t) => t.id !== id));
   }
 
-  function toggleSelect(id: string) {
-    const next = new Set(selectedIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    selectedIds = next;
+  function toggleSelect(id: string, multi: boolean) {
+    if (multi) {
+      const next = new Set(selectedIds);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      selectedIds = next;
+    } else {
+      selectedIds = selectedIds.has(id) && selectedIds.size === 1 ? new Set() : new Set([id]);
+    }
     confirmDelete = false;
   }
 
@@ -344,502 +275,12 @@
     confirmDelete = false;
   }
 
-  // ── Notes ─────────────────────────────────────────────────────────────────
-  // notesContent stores asset:// URLs so the live editor always works.
-  // The note .md file on disk stores repo-relative paths (portable, syncs to GitHub).
-  // Conversion happens once at load (relative→asset://) and once at save (asset://→relative).
-
-  const ASSET_RE = /^(?:asset:\/\/localhost|https?:\/\/asset\.localhost)(\/.*)/;
-
-  function splitUrlTitle(raw: string): [string, string] {
-    const i = raw.search(/\s+["']/);
-    return i >= 0 ? [raw.slice(0, i), raw.slice(i)] : [raw.trim(), ''];
-  }
-
-  // Convert repo-relative image paths → asset:// URLs (used when loading into editor).
-  function makeImagesLoadable(content: string): string {
-    const repoPath = $settings.repo_path;
-    if (!repoPath) return content;
-    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, raw) => {
-      const [src, title] = splitUrlTitle(raw);
-      if (src.startsWith('http') || src.startsWith('data:') || ASSET_RE.test(src)) return match;
-      const abs = src.startsWith('/') ? src : `${repoPath}/${src}`;
-      return `![${alt}](${convertFileSrc(abs)}${title})`;
-    });
-  }
-
-  // Convert asset:// URLs → repo-relative paths (used when saving to file).
-  function stripAssetUrls(content: string): string {
-    const repoPath = $settings.repo_path;
-    if (!repoPath) return content;
-    const prefix = repoPath + '/';
-    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, raw) => {
-      const [src, title] = splitUrlTitle(raw);
-      const m = src.match(ASSET_RE);
-      if (!m) return match;
-      let abs = decodeURIComponent(m[1]);
-      if (abs.startsWith('//')) abs = abs.slice(1);
-      const rel = abs.startsWith(prefix) ? abs.slice(prefix.length) : abs;
-      return `![${alt}](${rel}${title})`;
-    });
-  }
-
-  async function persistNotes(todo: Todo) {
-    // Save relative paths to the note file so it's portable and syncs cleanly.
-    const updated = await api.saveTodo({ ...todo, notes: stripAssetUrls(notesContent) || null });
-    todos.update((ts) => ts.map((t) => (t.id === updated.id ? updated : t)));
-  }
-
-  function scheduleNotesSave() {
-    if (notesSaveTimer) clearTimeout(notesSaveTimer);
-    notesSaveTimer = setTimeout(() => {
-      const todo = $todos.find((t) => t.id === notesOpenId);
-      if (todo) void persistNotes(todo);
-    }, 800);
-  }
-
-  const COPY_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
-  const CHECK_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
-
-  function makeCopyBtn(getText: () => string): HTMLButtonElement {
-    const btn = document.createElement('button');
-    btn.className = 'code-copy-btn';
-    btn.title = 'Copy';
-    btn.innerHTML = COPY_SVG;
-    btn.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      navigator.clipboard.writeText(getText()).then(() => {
-        btn.innerHTML = CHECK_SVG;
-        setTimeout(() => { btn.innerHTML = COPY_SVG; }, 1200);
-      });
-    });
-    return btn;
-  }
-
-  function patchToolbarCodeButton(editorInstance: Crepe, el: HTMLElement) {
-    const toolbar = el.querySelector('.toolbar');
-    if (!toolbar) return;
-    toolbar.addEventListener('pointerdown', (e) => {
-      const btn = (e.target as Element).closest('.toolbar-item');
-      if (!btn || !btn.innerHTML.includes('9.4 16.6')) return;
-      e.stopImmediatePropagation();
-      e.preventDefault();
-      editorInstance.editor.action((ctx) => {
-        const commands = ctx.get(commandsCtx);
-        commands.call(setBlockTypeCommand.key, { nodeType: codeBlockSchema.type(ctx) });
-      });
-    }, true);
-  }
-
-  const noInlineCodeKey = new PluginKey('no-inline-code');
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function installCodeBlockPlugin(milkCtx: any) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const view = milkCtx.get(editorViewCtx);
-    const inlineCodeType = inlineCodeSchema.type(milkCtx);
-    const codeBlockType = codeBlockSchema.type(milkCtx);
-
-    const plugin = new Plugin({
-      key: noInlineCodeKey,
-      appendTransaction(_trs, _old, newState) {
-        // Find paragraphs that contain inline code marks
-        const paraRanges: Array<{ start: number; end: number; node: typeof newState.doc }> = [];
-        newState.doc.descendants((node, pos) => {
-          if (node.type.name !== 'paragraph') return;
-          let hasInlineCode = false;
-          node.content.forEach((child) => {
-            if (child.isText && child.marks.some((m) => m.type === inlineCodeType)) hasInlineCode = true;
-          });
-          if (hasInlineCode) paraRanges.push({ start: pos, end: pos + node.nodeSize, node } as any);
-        });
-        if (paraRanges.length === 0) return null;
-
-        let tr = newState.tr;
-        // Process end-to-start so positions stay valid
-        for (let i = paraRanges.length - 1; i >= 0; i--) {
-          const { start, end, node } = paraRanges[i] as any;
-          const replacement: any[] = [];
-          let pendingText = '';
-
-          (node as any).content.forEach((child: any) => {
-            if (!child.isText) return;
-            const isCode = child.marks.some((m: any) => m.type === inlineCodeType);
-            if (isCode) {
-              if (pendingText.trim()) {
-                replacement.push(newState.schema.nodes.paragraph.create({}, newState.schema.text(pendingText)));
-                pendingText = '';
-              }
-              if (child.text) replacement.push(codeBlockType.create({}, newState.schema.text(child.text)));
-            } else {
-              pendingText += child.text ?? '';
-            }
-          });
-          if (pendingText.trim()) replacement.push(newState.schema.nodes.paragraph.create({}, newState.schema.text(pendingText)));
-
-          if (replacement.length) tr = tr.replaceWith(start, end, replacement);
-        }
-        return tr;
-      },
-      props: {
-        decorations(state) {
-          const decos: Decoration[] = [];
-          state.doc.descendants((node, pos) => {
-            if (node.type === codeBlockType && !node.textContent.includes('\n')) {
-              decos.push(Decoration.node(pos, pos + node.nodeSize, { class: 'single-line' }));
-            }
-          });
-          return DecorationSet.create(state.doc, decos);
-        }
-      }
-    });
-
-    view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
-  }
-
-  function attachCodeCopyButtons(pm: HTMLElement) {
-    // One shared floating button for both block and inline code
-    const floatBtn = makeCopyBtn(() => currentTarget?.textContent ?? '');
-    floatBtn.classList.add('float');
-    document.body.appendChild(floatBtn);
-
-    let currentTarget: HTMLElement | null = null;
-
-    function show(target: HTMLElement, refEl: HTMLElement) {
-      currentTarget = target;
-      const rect = refEl.getBoundingClientRect();
-      floatBtn.style.top = `${rect.top + 8}px`;
-      floatBtn.style.left = `${rect.right - 34}px`;
-      floatBtn.classList.add('visible');
-    }
-    function hide(e: MouseEvent) {
-      if ((e.relatedTarget as HTMLElement) === floatBtn) return;
-      floatBtn.classList.remove('visible');
-      currentTarget = null;
-    }
-
-    pm.addEventListener('mouseover', (e) => {
-      const pre = (e.target as HTMLElement).closest('pre');
-      if (pre instanceof HTMLElement) { show(pre.querySelector('code') ?? pre, pre); return; }
-      const code = (e.target as HTMLElement).closest('code');
-      if (code instanceof HTMLElement) {
-        const r = code.getBoundingClientRect();
-        currentTarget = code;
-        floatBtn.style.top = `${r.top + r.height / 2}px`;
-        floatBtn.style.left = `${r.right + 6}px`;
-        floatBtn.classList.add('visible');
-      }
-    });
-    pm.addEventListener('mouseout', hide);
-    floatBtn.addEventListener('mouseleave', hide);
-  }
-
-  function initNotesEditor(el: HTMLElement) {
-    if (!document.getElementById('mk-h-fix')) {
-      const s = document.createElement('style');
-      s.id = 'mk-h-fix';
-      s.textContent = '.milkdown .ProseMirror h1,.milkdown .ProseMirror h2,.milkdown .ProseMirror h3,.milkdown .ProseMirror h4,.milkdown .ProseMirror h5,.milkdown .ProseMirror h6{margin-top:0!important;padding-top:0!important}';
-      document.head.appendChild(s);
-    }
-    let instance: Crepe | null = null;
-    let destroyed = false;
-    const uploadImage = async (file: File) => {
-      if (!notesOpenId) throw new Error('No todo open');
-      const relPath = await saveTaskNoteImage(notesOpenId, file);
-      const repoPath = $settings.repo_path;
-      return repoPath ? convertFileSrc(`${repoPath}/${relPath}`) : relPath;
-    };
-    const c = new Crepe({
-      root: el,
-      defaultValue: notesContent, // already has asset:// URLs (set in openNotes)
-      features: {
-        [CrepeFeature.AI]: false,
-        [CrepeFeature.TopBar]: false,
-        [CrepeFeature.Latex]: false,
-        [CrepeFeature.Table]: false,
-        [CrepeFeature.BlockEdit]: true,
-        [CrepeFeature.CodeMirror]: false,
-        [CrepeFeature.LinkTooltip]: false,
-      },
-      featureConfigs: {
-        [CrepeFeature.ImageBlock]: {
-          onUpload: uploadImage,
-          blockOnUpload: uploadImage,
-        },
-      },
-    });
-    c.on((api) => {
-      api.markdownUpdated((_, markdown) => {
-        if (notesEditorLoading) return;
-        notesContent = markdown;
-        scheduleNotesSave();
-      });
-    });
-    el.addEventListener('keydown', handleNotesHeadingShortcut);
-
-    async function insertImageBlob(blob: Blob) {
-      if (!notesOpenId) return;
-      const relPath = await saveTaskNoteImage(notesOpenId, blob);
-      const repoPath = $settings.repo_path;
-      const assetUrl = repoPath ? convertFileSrc(`${repoPath}/${relPath}`) : relPath;
-      c.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
-        const nodeType = view.state.schema.nodes['image-block'];
-        if (nodeType) {
-          const node = nodeType.create({ src: assetUrl, caption: '', ratio: 1 });
-          view.dispatch(view.state.tr.replaceSelectionWith(node));
-        }
-      });
-    }
-
-    // Paste handler — three paths in priority order:
-    // 1. clipboardData already has an image file (some WebKit builds expose this)
-    // 2. clipboardData has text/html → let ProseMirror handle natively (fast, no Rust call)
-    // 3. clipboardData is empty (screenshot on Linux) → read image via Rust arboard
-    async function handlePaste(e: ClipboardEvent) {
-      if (!notesOpenId) return;
-      if ((document.activeElement as HTMLElement)?.classList.contains('caption-input')) return;
-
-      const items = Array.from(e.clipboardData?.items ?? []);
-
-      // Path 1: image file directly in clipboardData
-      const imgItem = items.find((i) => i.kind === 'file' && i.type.startsWith('image/'));
-      if (imgItem) {
-        e.preventDefault();
-        const blob = imgItem.getAsFile();
-        if (blob) try { await insertImageBlob(blob); } catch {}
-        return;
-      }
-
-      // Path 2: string content present → ProseMirror handles it, don't intercept
-      if (items.some((i) => i.kind === 'string')) return;
-
-      // Path 3: empty clipboardData (Linux screenshot) → ask Rust for the image
-      e.preventDefault();
-      try {
-        const b64 = await invoke<string | null>('read_clipboard_image');
-        if (!b64) return;
-        const relPath = await invoke<string>('save_task_note_image', {
-          id: notesOpenId, dataB64: b64, ext: 'png',
-        });
-        const repoPath = $settings.repo_path;
-        const assetUrl = repoPath ? convertFileSrc(`${repoPath}/${relPath}`) : relPath;
-        c.editor.action((ctx) => {
-          const view = ctx.get(editorViewCtx);
-          const nodeType = view.state.schema.nodes['image-block'];
-          if (nodeType) {
-            const node = nodeType.create({ src: assetUrl, caption: '', ratio: 1 });
-            view.dispatch(view.state.tr.replaceSelectionWith(node));
-          }
-        });
-      } catch {}
-    }
-
-    // Replace Milkdown's single-line caption <input> with an auto-resizing <textarea>.
-    function upgradeCaptionInput(inp: HTMLInputElement) {
-      inp.dataset.upgraded = '1';
-      const ta = document.createElement('textarea');
-      ta.className = inp.className;
-      ta.placeholder = inp.placeholder;
-      ta.value = inp.value;
-
-      const resize = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
-
-      // Stop ProseMirror from stealing focus or intercepting keys while editing caption.
-      // stopImmediatePropagation covers both other listeners on the same element and
-      // bubble-phase listeners on ancestors. Capture-phase listeners on ancestors still
-      // fire, but those (handleNotesCtrlV) don't preventDefault for text input.
-      const block = (e: Event) => e.stopImmediatePropagation();
-      for (const type of ['mousedown', 'mouseup', 'mousemove', 'pointerdown', 'pointerup', 'pointermove', 'click', 'keydown', 'keyup', 'keypress', 'beforeinput', 'compositionstart', 'compositionend', 'paste', 'cut', 'copy']) {
-        ta.addEventListener(type, block);
-      }
-      ta.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopImmediatePropagation(); });
-
-      // Forward value to hidden input so Milkdown's Vue state stays in sync.
-      // Dispatch as non-bubbling so the forwarded event doesn't loop back to ProseMirror.
-      ta.addEventListener('input', () => {
-        inp.value = ta.value;
-        inp.dispatchEvent(new Event('input', { bubbles: false }));
-        resize();
-      });
-      ta.addEventListener('blur', () => {
-        inp.value = ta.value;
-        inp.dispatchEvent(new Event('blur', { bubbles: false }));
-      });
-
-      inp.style.display = 'none';
-      inp.insertAdjacentElement('afterend', ta);
-      resize();
-    }
-
-    function upgradeCaptions(root: HTMLElement) {
-      root.querySelectorAll<HTMLInputElement>('input.caption-input:not([data-upgraded])').forEach(upgradeCaptionInput);
-    }
-
-    const captionObs = new MutationObserver(() => upgradeCaptions(el));
-
-    let rightAddBtn: HTMLButtonElement | null = null;
-    let posHandleObs: MutationObserver | null = null;
-
-    void c.create().then(() => {
-      if (!destroyed) {
-        instance = c;
-        notesEditorInstance = c;
-        const pm = el.querySelector('.ProseMirror');
-        if (pm instanceof HTMLElement) {
-          pm.style.paddingTop = '0';
-          attachCodeCopyButtons(pm);
-        }
-        patchToolbarCodeButton(c, el);
-        c.editor.action((ctx) => { installCodeBlockPlugin(ctx); });
-        el.addEventListener('paste', handlePaste, true);
-        captionObs.observe(el, { childList: true, subtree: true });
-        upgradeCaptions(el);
-
-        // Mirrored + button on the right edge. Visibility via CSS :hover on the
-        // wrapper — no observer needed. Position tracks the floating handle via
-        // a MutationObserver as a best-effort enhancement.
-        rightAddBtn = document.createElement('button');
-        rightAddBtn.className = 'mk-right-add';
-        rightAddBtn.title = 'Add block below';
-        rightAddBtn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
-        el.appendChild(rightAddBtn);
-
-        const capturedBtn = rightAddBtn;
-        capturedBtn.addEventListener('click', (e) => {
-          e.preventDefault();
-          // When the mouse moves from the editor to this button, Milkdown clears
-          // the "active block" before any click fires, so delegating to the
-          // hidden handle button does nothing. Insert directly via ProseMirror,
-          // then type '/' to open the slash menu just like the original handle does.
-          c.editor.action((ctx) => {
-            const view = ctx.get(editorViewCtx);
-            const { state } = view;
-            const selFrom = state.selection.$from;
-            try {
-              // Position right after the current top-level block (or end of doc).
-              const afterPos = selFrom.depth >= 1 ? selFrom.after(1) : state.doc.content.size;
-              const paragraph = state.schema.nodes.paragraph.createAndFill();
-              if (!paragraph) return;
-              const tr = state.tr.insert(afterPos, paragraph);
-              // Cursor inside the new empty paragraph.
-              tr.setSelection(TextSelection.create(tr.doc, afterPos + 1));
-              view.dispatch(tr.scrollIntoView());
-              // Insert '/' to open the slash menu (same as original + button).
-              view.dispatch(view.state.tr.insertText('/'));
-              view.focus();
-            } catch {}
-          });
-        });
-
-        // Keep top in sync with the handle so the button tracks the active line.
-        function syncTop() {
-          const handle = el.querySelector<HTMLElement>('.milkdown-block-handle');
-          if (!handle || handle.dataset.show !== 'true') return;
-          const handleRect = handle.getBoundingClientRect();
-          const elRect = el.getBoundingClientRect();
-          capturedBtn.style.top = `${handleRect.top - elRect.top + el.scrollTop}px`;
-        }
-
-        // Try to find the handle immediately; fall back to watching the DOM.
-        function tryAttach() {
-          if (posHandleObs) return;
-          const handle = el.querySelector<HTMLElement>('.milkdown-block-handle');
-          if (!handle) return;
-          posHandleObs = new MutationObserver(syncTop);
-          posHandleObs.observe(handle, { attributes: true, attributeFilter: ['data-show', 'style'] });
-          syncTop();
-        }
-        tryAttach();
-        if (!posHandleObs) {
-          const waitObs = new MutationObserver(() => { tryAttach(); if (posHandleObs) waitObs.disconnect(); });
-          waitObs.observe(el, { childList: true, subtree: true });
-        }
-      } else void c.destroy();
-    });
-    return {
-      destroy() {
-        destroyed = true;
-        captionObs.disconnect();
-        posHandleObs?.disconnect();
-        posHandleObs = null;
-        rightAddBtn?.remove();
-        rightAddBtn = null;
-        el.removeEventListener('keydown', handleNotesHeadingShortcut);
-        el.removeEventListener('paste', handlePaste, true);
-        if (notesEditorInstance === instance) notesEditorInstance = null;
-        void instance?.destroy();
-        instance = null;
-      },
-    };
-  }
-
-  function toggleNotesRaw() {
-    if (!notesRawMode) {
-      notesRawMode = true;
-    } else {
-      notesRawMode = false;
-      // makeImagesLoadable is a no-op for asset:// URLs but handles the case
-      // where the user typed relative paths in raw mode.
-      const loadable = makeImagesLoadable(notesContent);
-      notesContent = loadable;
-      notesEditorInstance?.editor.action(replaceAll(loadable));
-    }
-  }
-
-  function handleNotesHeadingShortcut(e: KeyboardEvent) {
-    if (!e.ctrlKey || notesRawMode || !notesEditorInstance) return;
-    const promote = e.key === '=' || e.key === '+';
-    const demote = e.key === '-';
-    if (!promote && !demote) return;
-    e.preventDefault();
-    notesEditorInstance.editor.action((ctx) => {
-      const view = ctx.get(editorViewCtx);
-      const { state } = view;
-      const { from, to } = state.selection;
-      const { schema } = state;
-      const parent = state.selection.$from.parent;
-      let level = 0;
-      if (parent.type === schema.nodes.heading) level = parent.attrs.level as number;
-      else if (parent.type !== schema.nodes.paragraph) return;
-      let tr;
-      if (promote) {
-        if (level === 1) return;
-        tr = state.tr.setBlockType(from, to, schema.nodes.heading, { level: level === 0 ? 6 : level - 1 });
-      } else {
-        if (level === 0) return;
-        tr = level === 6
-          ? state.tr.setBlockType(from, to, schema.nodes.paragraph)
-          : state.tr.setBlockType(from, to, schema.nodes.heading, { level: level + 1 });
-      }
-      view.dispatch(tr);
-    });
-  }
-
   function openNotes(todo: Todo) {
-    notesRawMode = false;
-    notesHistoryMode = false; notesHistorySha = null; notesHistoryCommits = [];
-    if (notesOpenId && notesOpenId !== todo.id) {
-      if (notesSaveTimer) { clearTimeout(notesSaveTimer); notesSaveTimer = null; }
-      const prev = $todos.find((t) => t.id === notesOpenId);
-      if (prev) void persistNotes(prev);
-    }
     notesOpenId = todo.id;
-    // Convert relative image paths to asset:// URLs so the editor can display them.
-    notesContent = makeImagesLoadable(todo.notes ?? '');
   }
 
   function closeNotes() {
-    if (notesSaveTimer) { clearTimeout(notesSaveTimer); notesSaveTimer = null; }
-    const todo = $todos.find((t) => t.id === notesOpenId);
-    if (todo) void persistNotes(todo);
     notesOpenId = null;
-  }
-
-  function clearNotesContent() {
-    notesContent = '';
-    notesEditorInstance?.editor.action(replaceAll(''));
-    scheduleNotesSave();
   }
 
   // ── Formatting helpers ────────────────────────────────────────────────────
@@ -1066,7 +507,7 @@
         {@const isSelected = selectedIds.has(todo.id)}
         {@const hasChildren = !isChild && $todos.some((t) => t.parent_id === todo.id)}
 
-        <div class="task-card {isChild ? 'child-card' : ''} {isChild && notesOpenId === todo.id ? 'child-expanded' : ''} {todo.done ? 'done' : ''} {isTimerActive ? 'timer-active' : ''} {isSelected ? 'selected' : ''} {notesOpenId === todo.id && !hasChildren ? 'notes-open' : ''}">
+        <div class="task-card {isChild ? 'child-card' : ''} {todo.done ? 'done' : ''} {isTimerActive ? 'timer-active' : ''} {isSelected ? 'selected' : ''} {notesOpenId === todo.id && !hasChildren ? 'notes-open' : ''}">
           {#if editId === todo.id}
             <div class="edit-form">
               <input class="input" bind:value={editTitle} onkeydown={(e) => e.key === 'Enter' && saveEdit(todo)} />
@@ -1093,16 +534,16 @@
               {/if}
             </button>
 
-            <div class="task-body" onclick={() => toggleSelect(todo.id)} ondblclick={() => { selectedIds = new Set([todo.id]); openNotes(todo); }}>
+            <div class="task-body" onclick={(e) => toggleSelect(todo.id, e.ctrlKey || e.metaKey)} ondblclick={() => { selectedIds = new Set([todo.id]); openNotes(todo); }}>
               <div class="task-title-row">
                 <span class="priority-bar" style="background:{priorityColor(todo.priority)}" title="{todo.priority} priority"></span>
                 <span class="task-title">{todo.title}</span>
-                {#if todo.notes}
+                {#if todo.notes && !isSelected}
                   <span class="notes-indicator" title="Has notes">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                   </span>
                 {/if}
-                {#if isTimerActive && timerStartMs !== undefined}
+                {#if isTimerActive && timerStartMs !== undefined && !isSelected}
                   <span class="timer-running">{formatElapsed(timerStartMs)}</span>
                 {/if}
               </div>
@@ -1131,11 +572,53 @@
                 {/each}
               </div>
             </div>
-            {#if !isChild}
-              <button class="add-child-icon-btn" title="Add subtask"
-                onclick={(e) => { e.stopPropagation(); addingChildFor = addingChildFor === todo.id ? null : todo.id; newChildTitle = ''; }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            {#if isSelected}
+              {#if isTimerActive && timerStartMs !== undefined}
+                <span class="timer-running">{formatElapsed(timerStartMs)}</span>
+              {/if}
+              <button class="task-action-btn {focusMode && focusTodoId === todo.id ? 'active' : ''}" title="{focusMode && focusTodoId === todo.id ? 'Exit focus' : 'Focus'}"
+                onclick={() => { if (focusMode && focusTodoId === todo.id) { focusMode = false; focusTodoId = null; } else { focusTodoId = todo.id; focusMode = true; } }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <ellipse cx="12" cy="12" rx="10" ry="6"/><circle cx="12" cy="12" r="3"/>
+                </svg>
               </button>
+              <button class="card-play-btn {isTimerActive ? 'stop' : ''}" title={isTimerActive ? 'Stop timer' : 'Start timer'}
+                onclick={() => isTimerActive ? stopTimer(todo) : startTimer(todo)}>
+                {#if isTimerActive}
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
+                {:else}
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+                {/if}
+              </button>
+              <div class="task-actions" onclick={(e) => e.stopPropagation()}>
+                {#if !isChild}
+                  <button class="task-action-btn" title="Add subtask"
+                    onclick={() => { addingChildFor = addingChildFor === todo.id ? null : todo.id; newChildTitle = ''; }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  </button>
+                {/if}
+                {#if hasChildren}
+                  <button class="task-action-btn" title={collapsedChildren.has(todo.id) ? 'Expand subtasks' : 'Collapse subtasks'}
+                    onclick={() => { const s = new Set(collapsedChildren); s.has(todo.id) ? s.delete(todo.id) : s.add(todo.id); collapsedChildren = s; }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                      style="transition: transform 0.2s; transform: rotate({collapsedChildren.has(todo.id) ? '-90' : '0'}deg)">
+                      <polyline points="6 9 12 15 18 9"/>
+                    </svg>
+                  </button>
+                {/if}
+                <button class="task-action-btn {notesOpenId === todo.id ? 'active' : ''}" title="{notesOpenId === todo.id ? 'Close notes' : 'Open notes'}"
+                  onclick={() => notesOpenId === todo.id ? closeNotes() : openNotes(todo)}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                </button>
+                <div class="task-actions-divider"></div>
+                <button class="task-action-btn" title="Edit" onclick={() => startEdit(todo)}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                </button>
+                <button class="task-action-btn delete-action" title="Delete"
+                  onclick={() => { selectedIds = new Set([todo.id]); confirmDelete = true; }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                </button>
+              </div>
             {/if}
           {/if}
         </div>
@@ -1144,22 +627,54 @@
           <div class="sessions-panel">
             <div class="sessions-title">Work sessions</div>
             {#each sessions as s, i}
-              <div class="session-row">
+              {@const isEditingThis = editingSession?.todoId === todo.id && editingSession.index === i}
+              <div class="session-row {isEditingThis ? 'editing' : ''}">
                 <span class="session-num">{i + 1}</span>
-                <span class="session-range">{fmtDateTime(s.start)} → {fmtDateTime(s.end)}</span>
-                <span class="session-dur">{formatDuration(new Date(s.end).getTime() - new Date(s.start).getTime())}</span>
+                {#if isEditingThis}
+                  <input class="session-dt-input session-date-input" type="date" value={editingSession!.start.split('T')[0]}
+                    oninput={(e) => editingSession = { ...editingSession!, start: (e.target as HTMLInputElement).value + 'T' + editingSession!.start.split('T')[1] }} />
+                  <input class="session-dt-input session-time-input" type="time" value={editingSession!.start.split('T')[1]}
+                    oninput={(e) => editingSession = { ...editingSession!, start: editingSession!.start.split('T')[0] + 'T' + (e.target as HTMLInputElement).value }} />
+                  <span class="session-sep">→</span>
+                  <input class="session-dt-input session-date-input" type="date" value={editingSession!.end.split('T')[0]}
+                    oninput={(e) => editingSession = { ...editingSession!, end: (e.target as HTMLInputElement).value + 'T' + editingSession!.end.split('T')[1] }} />
+                  <input class="session-dt-input session-time-input" type="time" value={editingSession!.end.split('T')[1]}
+                    oninput={(e) => editingSession = { ...editingSession!, end: editingSession!.end.split('T')[0] + 'T' + (e.target as HTMLInputElement).value }} />
+                  <button class="session-action-btn save" onclick={() => saveSessionEdit(todo)} title="Save">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                  <button class="session-action-btn" onclick={() => editingSession = null} title="Cancel">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                {:else}
+                  <span class="session-range">{fmtDateTime(s.start)} → {fmtDateTime(s.end)}</span>
+                  <button class="session-action-btn edit-btn" onclick={() => editingSession = { todoId: todo.id, index: i, start: toDatetimeLocal(s.start), end: toDatetimeLocal(s.end) }} title="Edit">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  </button>
+                  <button class="session-action-btn delete-btn" onclick={() => deleteSession(todo, i)} title="Delete">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                  </button>
+                  <span class="session-dur">{formatDuration(new Date(s.end).getTime() - new Date(s.start).getTime())}</span>
+                {/if}
               </div>
             {/each}
-            <div class="sessions-total">Total: {formatDuration(totalMs)}</div>
+            <div class="sessions-footer">
+              <span class="sessions-total">Total: {formatDuration(totalMs)}</span>
+              <button class="sessions-collapse-btn" onclick={() => expandedSessions = null} title="Collapse">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+              </button>
+            </div>
           </div>
         {/if}
 
         {#if !isChild}
           {@const children = $todos.filter((t) => t.parent_id === todo.id)}
           {#if children.length > 0 || addingChildFor === todo.id}
-            <div class="children-zone">
+            <div class="children-zone" class:collapsed={collapsedChildren.has(todo.id)}>
               {#each children as child (child.id)}
-                {@render taskCard(child, true)}
+                <div class="child-task-wrap {notesOpenId === child.id ? 'child-expanded' : ''}">
+                  {@render taskCard(child, true)}
+                </div>
               {/each}
               {#if addingChildFor === todo.id}
                 <div class="child-add-form">
@@ -1187,95 +702,14 @@
         {/if}
 
         {#if notesOpenId === todo.id}
-          <div class="notes-panel {hasChildren ? 'notes-panel-detached' : ''} {isChild ? 'child-expanded' : ''}">
-            <div class="notes-panel-header">
-              <span class="notes-panel-title">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                Notes
-              </span>
-              {#if notesHistoryMode}
-                <select
-                  class="notes-history-select"
-                  onchange={(e) => {
-                    const sha = (e.target as HTMLSelectElement).value;
-                    if (sha) {
-                      void selectNotesHistoryCommit(sha);
-                    } else {
-                      notesDiffMode = false;
-                      notesHistoryContent = '';
-                      notesHistorySha = null;
-                      if (notesEditorInstance) {
-                        notesEditorLoading = true;
-                        notesEditorInstance.editor.action(replaceAll(notesContent));
-                        notesEditorLoading = false;
-                        notesEditorInstance.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => true }); });
-                      }
-                    }
-                  }}
-                  disabled={notesHistoryContentLoading || notesHistoryLoading}
-                >
-                  {#if notesHistoryLoading}
-                    <option value="">Loading…</option>
-                  {:else if notesHistoryCommits.length === 0}
-                    <option value="">No history</option>
-                  {:else}
-                    <option value="" selected={!notesHistorySha}>Current version</option>
-                    {#each notesHistoryCommits as commit}
-                      <option value={commit.sha} selected={notesHistorySha === commit.sha} title={commit.message}>
-                        {fmtHistoryDate(commit.date)}
-                      </option>
-                    {/each}
-                  {/if}
-                </select>
-              {/if}
-              <div style="display:flex;gap:4px;align-items:center;">
-                {#if notesHistoryMode && notesHistorySha}
-                  <button class="notes-close-btn {notesDiffMode ? 'raw-active' : ''}" onclick={toggleNotesDiffMode} title="{notesDiffMode ? 'Show editor' : 'Show diff vs current'}">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="18"/><rect x="14" y="3" width="7" height="18"/></svg>
-                  </button>
-                {/if}
-                {#if notesHistoryMode}
-                  <button class="notes-close-btn raw-active" onclick={closeNotesHistory} title="Exit history">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                  </button>
-                {:else}
-                  <button class="notes-close-btn" onclick={clearNotesContent} title="Clear notes">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
-                  </button>
-                  <button class="notes-close-btn" onclick={openNotesHistory} title="Version history">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                  </button>
-                  <button class="notes-close-btn {notesRawMode ? 'raw-active' : ''}" onclick={toggleNotesRaw} title="{notesRawMode ? 'Switch to WYSIWYG' : 'Switch to raw markdown'}">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                  </button>
-                {/if}
-                <button class="notes-close-btn" onclick={closeNotes} title="Close notes">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-              </div>
-            </div>
-
-            {#if notesDiffMode && notesHistorySha && notesHistoryContent}
-              {@const diffChunks = buildDiffLines(notesHistoryContent, stripAssetUrls(notesContent))}
-              <div class="notes-diff-view">
-                {#each diffChunks as line}
-                  <div class="diff-line diff-{line.type}">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}{line.text}</div>
-                {/each}
-                {#if diffChunks.every(l => l.type === 'ctx')}
-                  <div class="diff-identical">No differences</div>
-                {/if}
-              </div>
-            {/if}
-            <div class="notes-editor-wrap" style:display={notesRawMode && !notesHistoryMode || (notesDiffMode && !!notesHistorySha) ? 'none' : ''} use:initNotesEditor></div>
-            {#if notesRawMode && !notesHistoryMode}
-              <textarea
-                class="notes-raw-editor"
-                bind:value={notesContent}
-                oninput={scheduleNotesSave}
-                spellcheck={false}
-              ></textarea>
-            {/if}
-          </div>
+          <NotesEditor
+            {todo}
+            repoPath={$settings.repo_path}
+            {hasChildren}
+            {focusMode}
+            onClose={closeNotes}
+            onTodoUpdated={(updated) => todos.update((ts) => ts.map((t) => t.id === updated.id ? updated : t))}
+          />
         {/if}
   {/snippet}
 
@@ -1341,7 +775,7 @@
   {/if}
 
   <!-- Selection action bar -->
-  {#if selectedIds.size > 0}
+  {#if selectedIds.size > 1}
     <div class="selection-bar">
       {#if confirmDelete}
         {@const delChildCount = [...selectedIds].reduce((n, id) => n + $todos.filter((t) => t.parent_id === id).length, 0)}
@@ -1351,61 +785,26 @@
         <button class="sel-btn ghost" onclick={() => (confirmDelete = false)}>Cancel</button>
       {:else}
         <div class="sel-top-row">
-          <span class="sel-count">{selectedIds.size} selected</span>
+          {#if selectedIds.size > 1}
+            <span class="sel-count">{selectedIds.size} selected</span>
+          {/if}
           <button class="sel-btn ghost icon-only" onclick={() => { selectedIds = new Set(); }} title="Clear selection">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
+          {#if selectedIds.size > 1}
+            <button class="sel-btn danger" onclick={() => (confirmDelete = true)} title="Delete selected">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+              Delete {selectedIds.size}
+            </button>
+          {/if}
           <div class="sel-spacer"></div>
-          {#if selTodo}
-            <button class="sel-btn" onclick={() => startEdit(selTodo!)} title="Edit">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              Edit
-            </button>
-            <button class="sel-btn" onclick={() => copyMarkdown(selTodo!)} title="Copy markdown">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              Copy
-            </button>
-            {#if !selTodo.parent_id}
-              <button class="sel-btn" onclick={() => { addingChildFor = selTodo!.id; newChildTitle = ''; }} title="Add subtask">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                Subtask
-              </button>
-            {/if}
-            <button
-              class="sel-btn {notesOpenId === selTodo.id ? 'notes-active' : ''}"
-              onclick={() => notesOpenId === selTodo!.id ? closeNotes() : openNotes(selTodo!)}
-              title="{notesOpenId === selTodo.id ? 'Close notes' : (selTodo.notes ? 'Edit notes' : 'Add notes')}"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-              Notes
-            </button>
-          {/if}
-          <button class="sel-btn danger" onclick={() => (confirmDelete = true)} title="Delete selected">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
-            Delete
-          </button>
         </div>
-        {#if selTodo}
-          {#if $activeTimers.has(selTodo.id)}
-            <button class="play-btn stop" onclick={() => stopTimer(selTodo!)} title="Stop timer">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="3"/></svg>
-              <span class="play-btn-time">{formatElapsed($activeTimers.get(selTodo.id)!)}</span>
-            </button>
-          {:else}
-            <button class="play-btn" onclick={() => startTimer(selTodo!)} title="Start timer">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-              Start timer
-            </button>
-          {/if}
-        {/if}
       {/if}
     </div>
   {/if}
 </div>
 
 <style>
-  @import '@milkdown/crepe/theme/common/style.css';
-  @import '@milkdown/crepe/theme/nord-dark.css';
 
   .tasks { height: 100%; overflow-y: auto; padding: 28px 32px 16px; display: flex; flex-direction: column; gap: 16px; }
 
@@ -1515,9 +914,22 @@
   .group-tag-chip.active { background: color-mix(in srgb, var(--accent-purple) 15%, transparent); border-color: var(--accent-purple); color: var(--accent-purple); }
   .group-clear-chip { color: var(--text-5); border-color: var(--border-2); }
 
+  .task-card > .task-action-btn { align-self: center; }
+  .card-play-btn {
+    width: 36px; height: 36px; border-radius: 50%; border: none; flex-shrink: 0;
+    background: var(--green); color: #fff; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    align-self: center;
+    transition: background 0.12s, transform 0.1s;
+  }
+  .card-play-btn:hover { background: #16a34a; }
+  .card-play-btn:active { transform: scale(0.93); }
+  .card-play-btn.stop { background: var(--red-border); color: var(--red); }
+  .card-play-btn.stop:hover { background: var(--red-border-2); }
+
   .task-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-    padding: 10px 14px; display: flex; align-items: flex-start; gap: 12px;
+    padding: 10px 14px; display: flex; align-items: center; gap: 12px;
     transition: border-color 0.12s, background 0.12s;
   }
   .task-card:hover { border-color: var(--border-2); }
@@ -1525,17 +937,17 @@
   .task-card.timer-active { border-color: var(--accent); background: var(--surface); }
   .task-card.selected { border-color: var(--accent); background: var(--accent-bg); }
 
-  .check-btn { background: none; border: none; cursor: pointer; padding: 0; flex-shrink: 0; display: flex; margin-top: 2px; }
+  .check-btn { background: none; border: none; cursor: pointer; padding: 0; flex-shrink: 0; display: flex; }
 
-  .task-body { flex: 1; min-width: 0; cursor: pointer; }
+  .task-body { flex: 1; min-width: 0; cursor: pointer; align-self: stretch; display: flex; flex-direction: column; justify-content: center; }
   .task-title-row { display: flex; align-items: flex-start; gap: 8px; }
-  .priority-bar { width: 3px; height: 16px; border-radius: 2px; flex-shrink: 0; margin-top: 3px; }
+  .priority-bar { width: 3px; height: 16px; border-radius: 2px; flex-shrink: 0; }
   .task-title { font-size: 0.9rem; color: var(--text-2); flex: 1; min-width: 0; word-break: break-word; }
   .task-card.done .task-title { text-decoration: line-through; color: var(--text-6); }
 
   .timer-running {
-    font-size: 0.78rem; color: var(--accent-lt); font-variant-numeric: tabular-nums;
-    background: var(--accent-bg); padding: 1px 7px; border-radius: 4px;
+    font-size: 0.92rem; color: var(--accent-lt); font-variant-numeric: tabular-nums;
+    background: var(--accent-bg); padding: 2px 8px; border-radius: 4px;
     font-family: monospace; letter-spacing: 0.03em;
   }
 
@@ -1571,11 +983,37 @@
     margin-top: -4px; display: flex; flex-direction: column; gap: 5px;
   }
   .sessions-title { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-7); margin-bottom: 4px; }
-  .session-row { display: flex; align-items: center; gap: 10px; font-size: 0.75rem; }
+  .session-row { display: flex; align-items: center; gap: 10px; font-size: 0.75rem; min-height: 24px; }
   .session-num { color: var(--text-7); min-width: 16px; text-align: right; }
   .session-range { color: var(--text-3); flex: 1; }
-  .session-dur { color: var(--accent-purple); white-space: nowrap; }
-  .sessions-total { font-size: 0.75rem; color: var(--text-6); padding-top: 4px; border-top: 1px solid var(--border); margin-top: 2px; }
+  .session-dur { color: var(--accent-purple); white-space: nowrap; margin-left: auto; }
+  .sessions-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 4px; border-top: 1px solid var(--border); margin-top: 2px; }
+  .sessions-total { font-size: 0.75rem; color: var(--text-6); }
+  .sessions-collapse-btn {
+    background: none; border: none; cursor: pointer; padding: 2px 4px; border-radius: 4px;
+    color: var(--text-6); display: flex; align-items: center; transition: background 0.1s, color 0.1s;
+  }
+  .sessions-collapse-btn:hover { background: var(--border); color: var(--text-2); }
+  .session-row .session-action-btn { display: none; }
+  .session-row:hover .session-action-btn { display: flex; }
+  .session-row.editing .session-action-btn { display: flex; }
+  .session-action-btn {
+    width: 22px; height: 22px; border-radius: 4px; border: none; background: transparent;
+    color: var(--text-6); cursor: pointer; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: background 0.1s, color 0.1s;
+  }
+  .session-action-btn:hover { background: var(--border); color: var(--text-2); }
+  .session-action-btn.edit-btn:hover { color: var(--accent-lt); background: var(--accent-bg); }
+  .session-action-btn.delete-btn:hover { color: #f87171; background: rgba(248,113,113,0.12); }
+  .session-action-btn.save:hover { color: #4ade80; background: rgba(74,222,128,0.1); }
+  .session-sep { color: var(--text-6); }
+  .session-dt-input {
+    background: var(--surface-alt); border: 1px solid var(--border-2); border-radius: 5px;
+    color: var(--text-2); font-size: 0.72rem; padding: 2px 6px;
+    color-scheme: dark;
+  }
+  .session-date-input { width: 7.5rem; }
+  .session-time-input { width: 5.5rem; }
 
   /* Focus mode toggle */
   .focus-toggle {
@@ -1599,43 +1037,14 @@
     padding: 0; overflow-y: auto;
   }
 
-  /* Focus mode: notes panel fills all remaining space, full bleed */
+  /* Focus mode: notes panel fills all remaining space */
   .focus-mode {
-    padding-left: 0;
-    padding-right: 0;
     padding-bottom: 0;
-    overflow: hidden;
   }
+  .focus-mode .task-card { border-color: transparent; }
   .focus-mode .focus-view {
-    overflow: hidden;
     min-height: 0;
   }
-  .focus-mode .notes-panel {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    border-left: none;
-    border-right: none;
-    border-bottom: none;
-    border-radius: 0;
-  }
-  .focus-mode .notes-editor-wrap {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-  }
-  :global(.focus-mode .notes-editor-wrap .ProseMirror) {
-    padding-bottom: 40px !important;
-  }
-  .focus-mode .notes-raw-editor {
-    flex: 1;
-    min-height: 0;
-    resize: none;
-    overflow-y: auto;
-  }
-
   /* Selection bar */
   .selection-bar {
     position: sticky; bottom: 0;
@@ -1661,20 +1070,6 @@
   .sel-btn.danger { color: var(--red); border-color: var(--red-border); }
   .sel-btn.danger:hover { background: var(--red-bg); border-color: var(--red); }
 
-  /* Big play / stop button */
-  .play-btn {
-    width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px;
-    padding: 14px 20px; border-radius: 10px; border: none;
-    background: var(--accent); color: #fff;
-    font-size: 1rem; font-weight: 600; cursor: pointer;
-    transition: background 0.15s, transform 0.1s;
-    letter-spacing: 0.01em;
-  }
-  .play-btn:hover { background: var(--accent-dk); }
-  .play-btn:active { transform: scale(0.98); }
-  .play-btn.stop { background: var(--red-border); color: var(--red); border: 1px solid var(--red-deep); }
-  .play-btn.stop:hover { background: var(--red-border-2); }
-  .play-btn-time { font-family: monospace; font-size: 1.1rem; letter-spacing: 0.05em; font-variant-numeric: tabular-nums; }
 
   @media (max-width: 600px) {
     .tasks { padding: 16px 16px 12px; }
@@ -1697,203 +1092,6 @@
     border-bottom-color: transparent;
   }
 
-  /* Notes panel */
-  .notes-panel {
-    background: var(--bg-deep);
-    border: 1px solid var(--accent);
-    border-top: none;
-    border-radius: 0 0 10px 10px;
-  }
-
-  .notes-panel-header {
-    display: flex; align-items: center; gap: 8px;
-    padding: 7px 14px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-deep);
-  }
-
-  .notes-panel-title {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 0.68rem; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.09em;
-    color: var(--accent); flex-shrink: 0;
-  }
-
-  .notes-close-btn {
-    display: flex; align-items: center; justify-content: center;
-    width: 22px; height: 22px; border-radius: 5px;
-    border: 1px solid transparent; background: transparent;
-    color: var(--text-6); cursor: pointer; transition: all 0.12s; margin-left: 2px;
-  }
-  .notes-close-btn:hover { border-color: var(--red-border); color: var(--red); background: var(--red-bg); }
-  .notes-clear-btn:hover { border-color: var(--red-border); color: var(--red); background: var(--red-bg); }
-  .notes-close-btn.raw-active { border-color: var(--accent); color: var(--accent-lt); background: var(--accent-bg); }
-  .notes-close-btn.raw-active:hover { border-color: var(--accent-lt); color: var(--accent-ltr); background: var(--accent-bg-2); }
-
-  /* Notes raw markdown textarea */
-  .notes-raw-editor {
-    display: block;
-    width: 100%;
-    min-height: 180px;
-    background: transparent;
-    border: none;
-    color: var(--text-2);
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 0.82rem;
-    line-height: 1.7;
-    padding: 12px 16px;
-    resize: vertical;
-    outline: none;
-    caret-color: var(--text-2) !important;
-    box-sizing: border-box;
-  }
-
-  /* Notes Milkdown editor */
-  .notes-editor-wrap { min-height: 140px; position: relative; }
-
-  /* Mirrored + button on the right edge of the notes editor.
-     Visibility driven by CSS hover — no JS observer needed for show/hide.
-     top is updated by JS to track the active line when possible. */
-  :global(.notes-editor-wrap .mk-right-add) {
-    position: absolute;
-    right: 6px;
-    top: 10px; /* fallback; overridden by JS when handle is tracked */
-    width: 28px; height: 28px;
-    padding: 2px;
-    border-radius: 4px;
-    background: transparent; border: none; cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
-    color: var(--text-7);
-    opacity: 0; pointer-events: none;
-    transition: opacity 0.15s, background 0.12s, color 0.12s;
-    z-index: 10;
-  }
-  :global(.notes-editor-wrap:hover .mk-right-add) {
-    opacity: 1; pointer-events: auto;
-  }
-  :global(.notes-editor-wrap .mk-right-add:hover) {
-    background: var(--accent-bg);
-    color: var(--accent-lt);
-  }
-
-  :global(.notes-editor-wrap .milkdown) {
-    --crepe-color-background: var(--bg-deep);
-    --crepe-color-surface: var(--surface);
-    --crepe-color-surface-low: var(--bg);
-    --crepe-color-on-background: var(--text-2);
-    --crepe-color-on-surface: var(--text-2);
-    --crepe-color-on-surface-variant: var(--text-3);
-    --crepe-color-outline: var(--border-2);
-    --crepe-color-primary: var(--accent);
-    --crepe-color-secondary: var(--accent-bg);
-    --crepe-color-on-secondary: var(--accent-ltr);
-    --crepe-color-inline-code: var(--accent-purple);
-    --crepe-color-inline-area: var(--border);
-    --crepe-color-hover: var(--accent-bg);
-    --crepe-color-selected: rgba(99, 102, 241, 0.45);
-    --crepe-color-error: var(--red);
-    --crepe-shadow-1: none;
-    --crepe-shadow-2: none;
-  }
-
-  /* Notes history dropdown */
-  .notes-history-select {
-    flex: 1; min-width: 0;
-    background: var(--bg); border: 1px solid var(--border-2); border-radius: 6px;
-    color: var(--text-2); padding: 2px 24px 2px 8px; font-size: 0.72rem; outline: none;
-    cursor: pointer; max-width: 200px;
-    appearance: none; -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-repeat: no-repeat; background-position: right 6px center;
-  }
-  .notes-history-select:focus { border-color: var(--accent); }
-  .notes-history-select:disabled { opacity: 0.5; cursor: default; }
-
-  :global(.notes-editor-wrap .ProseMirror) {
-    padding: 4px 16px 12px !important;
-    font-size: 0.85rem;
-    line-height: 1.65;
-    min-height: 120px;
-    outline: none;
-    overflow-wrap: break-word;
-    word-break: break-word;
-    caret-color: var(--text-2) !important;
-  }
-  :global(.notes-editor-wrap .milkdown) { position: relative; }
-  /* Hide original + button from the handle; keep only ⠿ drag dots */
-  :global(.notes-editor-wrap .milkdown-block-handle .operation-item:first-child) { display: none; }
-
-  /* Block code */
-  :global(.notes-editor-wrap .ProseMirror pre) {
-    position: relative;
-    background: var(--bg-deep);
-    border: 1px solid var(--border-2);
-    border-left: 3px solid var(--accent);
-    border-radius: 6px;
-    padding: 8px 14px;
-    margin: 3px 0;
-    overflow-x: auto;
-  }
-  /* Consecutive code blocks — close the gap so they feel like one region */
-  :global(.notes-editor-wrap .ProseMirror .milkdown-code-block + .milkdown-code-block) {
-    margin-top: 1px;
-  }
-  /* Single-line code blocks — decoration class lands on div.milkdown-code-block */
-  :global(.notes-editor-wrap .ProseMirror .milkdown-code-block.single-line pre) {
-    padding: 4px 10px;
-  }
-  :global(.notes-editor-wrap .ProseMirror .milkdown-code-block.single-line) {
-    margin: 2px 0;
-  }
-  /* List item with a code block: bullet stays on the same line */
-  :global(.notes-editor-wrap .ProseMirror li:has(> .milkdown-code-block)) {
-    display: flex;
-    align-items: center;
-    list-style: none;
-    gap: 6px;
-  }
-  :global(.notes-editor-wrap .ProseMirror li:has(> .milkdown-code-block)::before) {
-    content: '•';
-    flex-shrink: 0;
-    font-size: 1.1em;
-    line-height: 1;
-    color: var(--text-6);
-  }
-  :global(.notes-editor-wrap .ProseMirror li:has(> .milkdown-code-block) > .milkdown-code-block) {
-    flex: 1;
-    min-width: 0;
-    margin: 0;
-  }
-  :global(.notes-editor-wrap .ProseMirror pre code) {
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 0.82rem;
-    line-height: 1.7;
-    color: var(--text-2);
-    background: none;
-    border: none;
-    padding: 0;
-  }
-
-  :global(.code-copy-btn) {
-    position: fixed;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    width: 26px; height: 26px;
-    border-radius: 6px;
-    border: 1px solid var(--border-2);
-    background: var(--surface-alt);
-    color: var(--text-5);
-    cursor: pointer;
-    z-index: 9999;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-  }
-  :global(.code-copy-btn.visible) { display: flex; }
-  :global(.code-copy-btn:hover) { background: var(--accent-bg-2); border-color: var(--accent); color: var(--text-2); }
-
-  /* Notes button active state in selection bar */
-  .sel-btn.notes-active { color: var(--accent-lt); border-color: var(--accent); background: var(--accent-bg); }
-  .sel-btn.notes-active:hover { background: var(--accent-bg-2); }
 
   /* ── Subtasks ──────────────────────────────────────────────────────────── */
 
@@ -1909,7 +1107,9 @@
 
   /* Break a child card/panel out of the children-zone indent when notes are open.
      42px = children-zone margin-left(30) + border-left(2) + padding-left(10) */
-  .children-zone .child-expanded {
+  .children-zone .child-task-wrap { display: contents; }
+  .children-zone .child-task-wrap.child-expanded {
+    display: block;
     box-sizing: border-box;
     margin-left: -42px;
     width: calc(100% + 42px);
@@ -1948,40 +1148,34 @@
   }
 
   /* + icon button on the card (shown on hover/select) */
-  .add-child-icon-btn {
-    opacity: 0; flex-shrink: 0; align-self: flex-start; margin-top: 1px;
-    width: 22px; height: 22px; border-radius: 5px;
-    border: 1px solid transparent; background: transparent;
-    color: var(--text-7); cursor: pointer;
+  .task-actions {
+    display: flex; align-items: center; gap: 2px;
+    flex-shrink: 0; align-self: center;
+    background: var(--surface-alt); border: 1px solid var(--border-2);
+    border-radius: 8px; padding: 3px;
+  }
+  .task-action-btn {
+    width: 26px; height: 26px; border-radius: 5px;
+    border: none; background: transparent;
+    color: var(--text-5); cursor: pointer;
     display: flex; align-items: center; justify-content: center;
-    transition: all 0.12s;
+    transition: background 0.1s, color 0.1s;
   }
-  .task-card:hover .add-child-icon-btn,
-  .task-card.selected .add-child-icon-btn { opacity: 1; }
-  .add-child-icon-btn:hover {
-    border-color: var(--accent); color: var(--accent-lt);
-    background: var(--accent-bg); opacity: 1;
+  .task-action-btn:hover { background: var(--border); color: var(--text-2); }
+  .task-action-btn.active { background: var(--accent-bg); color: var(--accent-lt); }
+  .task-action-round {
+    width: 32px; height: 32px; border-radius: 50%; border: none; flex-shrink: 0;
+    background: var(--accent); color: #fff; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.12s, transform 0.1s;
   }
+  .task-action-round:hover { background: var(--accent-dk); }
+  .task-action-round:active { transform: scale(0.93); }
+  .task-action-round.stop { background: var(--red-border); color: var(--red); }
+  .task-action-round.stop:hover { background: var(--red-border-2); }
+  .task-actions-divider { width: 1px; height: 16px; background: var(--border-2); margin: 0 2px; flex-shrink: 0; }
+  .task-action-btn.delete-action:hover { color: #f87171; background: rgba(248,113,113,0.12); }
+  .children-zone.collapsed > :not(.child-add-form) { display: none; }
 
-  /* Notes panel when it has a children-zone above it (no seamless merge) */
-  .notes-panel.notes-panel-detached {
-    border-top: 1px solid var(--accent);
-    border-radius: 0 0 10px 10px;
-    margin-top: 2px;
-  }
-
-  /* Notes diff view */
-  .notes-diff-view {
-    flex: 1; min-height: 140px; overflow-y: auto;
-    background: var(--bg-deep);
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 0.78rem; line-height: 1.65;
-    padding: 8px 0;
-  }
-  .diff-line { display: block; padding: 1px 16px; white-space: pre-wrap; word-break: break-all; }
-  .diff-add { background: color-mix(in srgb, var(--green) 12%, transparent); color: var(--green); }
-  .diff-del { background: color-mix(in srgb, var(--red) 12%, transparent); color: var(--red); }
-  .diff-ctx { color: var(--text-6); }
-  .diff-identical { padding: 20px 16px; color: var(--text-7); font-size: 0.78rem; font-style: italic; }
 
 </style>

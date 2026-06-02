@@ -2,6 +2,11 @@
 /* Dark is the default; light overrides are in [data-theme="light"]. */
 /* The theme is applied by JS (see +page.svelte) so we only need two rules. */
 
+*, *::before, *::after {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 :root {
   color-scheme: dark;
 

@@ -125,6 +125,73 @@
     return `${cell.value} task${cell.value === 1 ? '' : 's'} completed · ${d}`;
   }
 
+  // ── 24h Timeline ─────────────────────────────────────────────────────────
+  const TL_COLORS = ['#6366f1','#0ea5e9','#10b981','#f59e0b','#ef4444','#ec4899','#8b5cf6','#f97316'];
+
+  let tlColorTags: string[] = $state([]);
+  let tlDropdownOpen = $state(false);
+  let tlTick = $state(0);
+
+  $effect(() => {
+    const id = setInterval(() => { tlTick++; }, 30000);
+    return () => clearInterval(id);
+  });
+
+  let allTags = $derived([...new Set($todos.flatMap(t => t.tags))].sort().filter(t => t !== 'other'));
+
+  const tlNowFrac = $derived.by(() => {
+    void tlTick;
+    const n = new Date();
+    return (n.getHours() * 60 + n.getMinutes()) / 1440;
+  });
+
+  const tlNowLabel = $derived.by(() => {
+    void tlTick;
+    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  });
+
+  const tlTodayLabel = $derived(
+    new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })
+  );
+
+  function tlTagColor(tags: string[]): string {
+    for (const tag of tags) {
+      const idx = tlColorTags.indexOf(tag);
+      if (idx >= 0) return TL_COLORS[idx % TL_COLORS.length];
+    }
+    return 'var(--border-2)';
+  }
+
+  function tlToggleTag(tag: string) {
+    if (tlColorTags.includes(tag)) tlColorTags = tlColorTags.filter(t => t !== tag);
+    else tlColorTags = [...tlColorTags, tag];
+  }
+
+  const tlSessions = $derived.by(() => {
+    void tlTick;
+    const todayStr = localDateStr(new Date());
+    const out: { startFrac: number; widthFrac: number; color: string; tooltip: string }[] = [];
+    for (const todo of $todos) {
+      for (const s of todo.work_sessions ?? []) {
+        if (!s.start || !s.end) continue;
+        const startD = new Date(s.start);
+        if (localDateStr(startD) !== todayStr) continue;
+        const endD = new Date(s.end);
+        const startMin = startD.getHours() * 60 + startD.getMinutes();
+        const endMin   = endD.getHours()   * 60 + endD.getMinutes();
+        const durMin   = Math.max(1, endMin - startMin);
+        const h = Math.floor(durMin / 60), m = durMin % 60;
+        out.push({
+          startFrac: startMin / 1440,
+          widthFrac: durMin / 1440,
+          color: tlTagColor(todo.tags),
+          tooltip: `${todo.title} · ${h > 0 ? `${h}h ` : ''}${m}m`,
+        });
+      }
+    }
+    return out;
+  });
+
   // ── Other helpers ─────────────────────────────────────────────────────────
   function fmtDate(iso: string): string {
     return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -207,22 +274,76 @@
     </div>
   </div>
 
-  <!-- Stats row -->
-  <div class="stats">
-    <div class="stat-card">
-      <span class="stat-value">{$pendingTodos.length}</span>
-      <span class="stat-label">Pending tasks</span>
+  <!-- 24h Timeline -->
+  <div class="tl-card" onclick={() => { if (tlDropdownOpen) tlDropdownOpen = false; }}>
+    <div class="tl-header">
+      <div class="tl-title-group">
+        <span class="tl-title">Today</span>
+        <span class="tl-date">{tlTodayLabel}</span>
+      </div>
+      <div class="tl-dropdown-wrap" onclick={(e) => e.stopPropagation()}>
+        <button class="tl-dropdown-btn {tlColorTags.length > 0 ? 'active' : ''}"
+          onclick={() => (tlDropdownOpen = !tlDropdownOpen)}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/></svg>
+          Colour by tag
+          {#if tlColorTags.length > 0}<span class="tl-tag-count">{tlColorTags.length}</span>{/if}
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="transition: transform 0.15s; transform: rotate({tlDropdownOpen ? '180' : '0'}deg)"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        {#if tlDropdownOpen}
+          <div class="tl-dropdown">
+            {#if allTags.length === 0}
+              <span class="tl-dropdown-empty">No tags yet</span>
+            {:else}
+              {#each allTags as tag}
+                {@const selected = tlColorTags.includes(tag)}
+                {@const colorIdx = tlColorTags.indexOf(tag)}
+                <label class="tl-tag-row">
+                  <input type="checkbox" checked={selected} onchange={() => tlToggleTag(tag)} />
+                  <span class="tl-tag-swatch" style="background:{selected ? TL_COLORS[colorIdx % TL_COLORS.length] : 'var(--border-2)'}"></span>
+                  #{tag}
+                </label>
+              {/each}
+            {/if}
+          </div>
+        {/if}
+      </div>
     </div>
-    <div class="stat-card">
-      <span class="stat-value">{$notes.length}</span>
-      <span class="stat-label">Documents</span>
+
+    <!-- Track -->
+    <div class="tl-track-wrap">
+      <div class="tl-now-label-row" style="--now:{tlNowFrac * 100}%">
+        <span class="tl-now-time">{tlNowLabel}</span>
+      </div>
+      <div class="tl-track">
+        {#each [6, 12, 18] as h}
+          <div class="tl-grid-line" style="left:{h/24*100}%"></div>
+        {/each}
+        {#each tlSessions as s}
+          <div class="tl-bar" style="left:{s.startFrac*100}%; width:max(3px,{s.widthFrac*100}%); background:{s.color}" title={s.tooltip}></div>
+        {/each}
+        <div class="tl-now-line" style="left:{tlNowFrac*100}%"></div>
+      </div>
+      <div class="tl-hours">
+        {#each [0, 3, 6, 9, 12, 15, 18, 21, 24] as h}
+          <span class="tl-hour-lbl" style="left:{h/24*100}%">{h === 0 ? '0h' : `${h}h`}</span>
+        {/each}
+      </div>
     </div>
-    <div class="stat-card">
-      <span class="stat-value sync-status {$syncState.syncing ? 'syncing' : $syncState.lastResult?.success === false ? 'error' : 'ok'}">
-        {$syncState.syncing ? '↻' : $syncState.lastResult?.success === false ? '✕' : '✓'}
-      </span>
-      <span class="stat-label">{fmtSync($syncState.lastSync)}</span>
-    </div>
+
+    {#if tlColorTags.length > 0}
+      <div class="tl-legend">
+        {#each tlColorTags as tag, i}
+          <span class="tl-legend-item">
+            <span class="tl-legend-dot" style="background:{TL_COLORS[i % TL_COLORS.length]}"></span>
+            #{tag}
+          </span>
+        {/each}
+        <span class="tl-legend-item tl-legend-other">
+          <span class="tl-legend-dot" style="background:var(--border-2)"></span>
+          other
+        </span>
+      </div>
+    {/if}
   </div>
 
   <div class="sections">
@@ -404,18 +525,6 @@
     margin: 0 3px;
   }
 
-  /* ── Stats ── */
-  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-  .stat-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-    padding: 16px 20px; display: flex; flex-direction: column; gap: 4px;
-  }
-  .stat-value { font-size: 1.6rem; font-weight: 700; color: var(--text-1); }
-  .stat-label { font-size: 0.8rem; color: var(--text-6); }
-  .sync-status.syncing { color: var(--yellow); }
-  .sync-status.error { color: var(--red); }
-  .sync-status.ok { color: var(--green); }
-
   /* ── Sections ── */
   .sections {
     display: grid;
@@ -449,6 +558,81 @@
 
   .tag-chip { font-size: 0.7rem; color: var(--accent-lt); background: var(--accent-bg); padding: 1px 6px; border-radius: 4px; }
   .due-chip { font-size: 0.7rem; color: var(--yellow); background: var(--yellow-bg); padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+
+  /* ── 24h Timeline ── */
+  .tl-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 16px 20px 14px;
+  }
+  .tl-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .tl-title-group { display: flex; flex-direction: column; gap: 1px; }
+  .tl-title { font-size: 0.82rem; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
+  .tl-date { font-size: 0.75rem; color: var(--text-6); }
+
+  .tl-dropdown-wrap { position: relative; }
+  .tl-dropdown-btn {
+    display: flex; align-items: center; gap: 5px; padding: 4px 10px;
+    border-radius: 7px; border: 1px solid var(--border-2);
+    background: transparent; color: var(--text-4); font-size: 0.75rem; cursor: pointer;
+    transition: border-color 0.12s, color 0.12s;
+  }
+  .tl-dropdown-btn:hover, .tl-dropdown-btn.active { border-color: var(--accent); color: var(--accent-ltr); }
+  .tl-tag-count {
+    background: var(--accent-bg); color: var(--accent-lt); border-radius: 10px;
+    padding: 0 5px; font-size: 0.7rem; font-weight: 600;
+  }
+  .tl-dropdown {
+    position: absolute; right: 0; top: calc(100% + 4px);
+    background: var(--surface-alt); border: 1px solid var(--border-2); border-radius: 10px;
+    padding: 6px; min-width: 170px; z-index: 50;
+    display: flex; flex-direction: column; gap: 1px;
+    max-height: 220px; overflow-y: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  }
+  .tl-dropdown-empty { font-size: 0.78rem; color: var(--text-6); padding: 6px 8px; }
+  .tl-tag-row {
+    display: flex; align-items: center; gap: 7px; padding: 5px 7px;
+    border-radius: 6px; cursor: pointer; font-size: 0.78rem; color: var(--text-3);
+  }
+  .tl-tag-row:hover { background: var(--border); }
+  .tl-tag-row input { accent-color: var(--accent); cursor: pointer; }
+  .tl-tag-swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; transition: background 0.12s; }
+
+  .tl-track-wrap { position: relative; }
+  .tl-now-label-row {
+    position: relative; height: 16px; margin-bottom: 2px;
+  }
+  .tl-now-time {
+    position: absolute; left: var(--now); transform: translateX(-50%);
+    font-size: 0.65rem; color: var(--red); font-weight: 600; white-space: nowrap;
+  }
+  .tl-track {
+    position: relative; height: 28px; border-radius: 6px;
+    background: var(--surface-alt); border: 1px solid var(--border); overflow: hidden;
+  }
+  .tl-grid-line {
+    position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border-2);
+  }
+  .tl-bar {
+    position: absolute; top: 4px; height: 20px; border-radius: 3px;
+    opacity: 0.85; transition: opacity 0.1s; cursor: default;
+  }
+  .tl-bar:hover { opacity: 1; filter: brightness(1.2); }
+  .tl-now-line {
+    position: absolute; top: 0; bottom: 0; width: 2px;
+    background: var(--red); border-radius: 1px;
+  }
+  .tl-hours { position: relative; height: 18px; margin-top: 4px; }
+  .tl-hour-lbl {
+    position: absolute; transform: translateX(-50%);
+    font-size: 0.65rem; color: var(--text-6); white-space: nowrap;
+  }
+  .tl-legend {
+    display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px;
+    padding-top: 10px; border-top: 1px solid var(--border);
+  }
+  .tl-legend-item { display: flex; align-items: center; gap: 5px; font-size: 0.75rem; color: var(--text-5); }
+  .tl-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .tl-legend-other { color: var(--text-7); }
 
   @media (max-width: 700px) {
     .home { padding: 16px; }

@@ -46,6 +46,8 @@ export const taskFilterTag = localStore<string>('todoto-filter-tag', '');
 export const taskFilterDuePeriod = localStore<'' | 'overdue' | 'today' | 'week' | 'month'>('todoto-filter-due', '');
 export const taskFilterGroupByTags = localStore<string[]>('todoto-filter-group-tags', []);
 export const taskFilterSearch = localStore<string>('todoto-filter-search', '');
+export const taskFilterShowOther = localStore<boolean>('todoto-filter-show-other', false);
+export const taskFilterHideUngrouped = localStore<boolean>('todoto-filter-hide-ungrouped', false);
 
 export const pendingTodos = derived(todos, ($todos) => $todos.filter((t) => !t.done));
 export const doneTodos = derived(todos, ($todos) => $todos.filter((t) => t.done));

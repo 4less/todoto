@@ -444,7 +444,7 @@
         [CrepeFeature.AI]: false,
         [CrepeFeature.TopBar]: false,
         [CrepeFeature.Latex]: false,
-        [CrepeFeature.Table]: false,
+        [CrepeFeature.Table]: true,
         [CrepeFeature.BlockEdit]: true,
         [CrepeFeature.CodeMirror]: false,
         [CrepeFeature.LinkTooltip]: false,
@@ -697,6 +697,7 @@
     border: 1px solid var(--accent);
     border-top: none;
     border-radius: 0 0 10px 10px;
+    overflow: hidden;
   }
   .notes-panel.focus-panel {
     flex: 1;
@@ -772,17 +773,6 @@
     padding-bottom: 40px !important;
   }
 
-  /* Mirrored + button on the right edge */
-  :global(.notes-editor-wrap .mk-right-add) {
-    position: absolute; right: 6px; top: 10px;
-    width: 28px; height: 28px; padding: 2px; border-radius: 4px;
-    background: transparent; border: none; cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
-    color: var(--text-7); opacity: 0; pointer-events: none;
-    transition: opacity 0.15s, background 0.12s, color 0.12s; z-index: 10;
-  }
-  :global(.notes-editor-wrap:hover .mk-right-add) { opacity: 1; pointer-events: auto; }
-  :global(.notes-editor-wrap .mk-right-add:hover) { background: var(--accent-bg); color: var(--accent-lt); }
 
   /* Milkdown theme variables */
   :global(.notes-editor-wrap .milkdown) {
@@ -805,10 +795,13 @@
     --crepe-shadow-2: none;
   }
   :global(.notes-editor-wrap .milkdown) { position: relative; }
-  :global(.notes-editor-wrap .milkdown-block-handle .operation-item:first-child) { display: none; }
+  /* Hide only the drag dots (last operation-item) — + button (first) stays */
+  :global(.notes-editor-wrap .milkdown-block-handle .operation-item:last-child) { display: none; }
+  /* Pin the handle in the left gutter (within the 36px left padding) */
+  :global(.notes-editor-wrap .milkdown-block-handle) { left: 2px !important; }
 
   :global(.notes-editor-wrap .ProseMirror) {
-    padding: 4px 16px 12px !important;
+    padding: 4px 16px 12px 36px !important;
     font-size: 0.85rem; line-height: 1.65; min-height: 120px;
     outline: none; overflow-wrap: break-word; word-break: break-word;
     caret-color: var(--text-2) !important;

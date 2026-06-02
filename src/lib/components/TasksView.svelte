@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, settings } from '$lib/stores';
+  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, settings } from '$lib/stores';
   import { api } from '$lib/api';
   import type { Todo, WorkSession } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
@@ -73,7 +73,7 @@
 
   // ── Subtask state ─────────────────────────────────────────────────────────
   let addingChildFor: string | null = $state(null);
-  let collapsedChildren: Set<string> = $state(new Set());
+  let expandedChildren: Set<string> = $state(new Set());
   let newChildTitle = $state('');
 
   $effect(() => {
@@ -89,7 +89,7 @@
   });
 
   // ── Derived ───────────────────────────────────────────────────────────────
-  let allTags = $derived([...new Set($todos.flatMap((t) => t.tags))].sort());
+  let allTags = $derived([...new Set($todos.flatMap((t) => t.tags))].sort().filter((tag) => tag !== 'other'));
 
   let filtered = $derived(
     $todos
@@ -99,6 +99,7 @@
         if ($taskFilterStatus === 'done' && !t.done) return false;
         if ($taskFilterPriority && t.priority !== $taskFilterPriority) return false;
         if ($taskFilterTag && !t.tags.includes($taskFilterTag)) return false;
+        if (!$taskFilterShowOther && t.tags.includes('other')) return false;
         if ($taskFilterDuePeriod) {
           const due = t.due_date ? new Date(t.due_date) : null;
           const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -106,13 +107,13 @@
             if (!due || due >= today) return false;
           } else if ($taskFilterDuePeriod === 'today') {
             const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
-            if (!due || due < today || due >= tomorrow) return false;
+            if (!due || due >= tomorrow) return false;
           } else if ($taskFilterDuePeriod === 'week') {
             const weekEnd = new Date(today); weekEnd.setDate(today.getDate() + 7);
-            if (!due || due < today || due >= weekEnd) return false;
+            if (!due || due >= weekEnd) return false;
           } else if ($taskFilterDuePeriod === 'month') {
             const monthEnd = new Date(today); monthEnd.setDate(today.getDate() + 30);
-            if (!due || due < today || due >= monthEnd) return false;
+            if (!due || due >= monthEnd) return false;
           }
         }
         if ($taskFilterSearch && !t.title.toLowerCase().includes($taskFilterSearch.toLowerCase())) return false;
@@ -132,7 +133,7 @@
   let rootTodoCount = $derived($todos.filter((t) => !t.parent_id).length);
 
   let ungroupedPending = $derived(
-    $taskFilterGroupByTags.length > 0
+    $taskFilterGroupByTags.length > 0 && !$taskFilterHideUngrouped
       ? pendingTodos.filter((t) => !$taskFilterGroupByTags.some((gt) => t.tags.includes(gt)))
       : []
   );
@@ -456,16 +457,14 @@
             onclick={() => ($taskFilterPriority = $taskFilterPriority === p ? '' : p as typeof $taskFilterPriority)}>{p}</button>
         {/each}
       </div>
-      {#if allTags.length > 0}
-        <div class="filter-chips">
-          <span class="filter-label">Tag:</span>
-          <button class="chip {$taskFilterTag === '' ? 'active' : ''}" onclick={() => ($taskFilterTag = '')}>all</button>
-          {#each allTags as tag}
-            <button class="chip tag-chip {$taskFilterTag === tag ? 'active' : ''}"
-              onclick={() => ($taskFilterTag = $taskFilterTag === tag ? '' : tag)}>#{tag}</button>
-          {/each}
-        </div>
-      {/if}
+      <div class="filter-chips">
+        <span class="filter-label">Tag:</span>
+        <button class="chip {$taskFilterTag === '' ? 'active' : ''}" onclick={() => ($taskFilterTag = '')}>all</button>
+        {#each allTags as tag}
+          <button class="chip tag-chip {$taskFilterTag === tag ? 'active' : ''}"
+            onclick={() => ($taskFilterTag = $taskFilterTag === tag ? '' : tag)}>#{tag}</button>
+        {/each}
+      </div>
       <div class="filter-chips">
         <span class="filter-label">Due:</span>
         <button class="chip {$taskFilterDuePeriod === '' ? 'active' : ''}" onclick={() => ($taskFilterDuePeriod = '')}>all</button>
@@ -493,6 +492,13 @@
               }}
             >#{tag}</button>
           {/each}
+          {#if $taskFilterGroupByTags.length > 0}
+            <button class="chip other-chip {$taskFilterHideUngrouped ? 'active' : ''}"
+              onclick={() => ($taskFilterHideUngrouped = !$taskFilterHideUngrouped)}
+              title="Toggle visibility of ungrouped todos">
+              {$taskFilterHideUngrouped ? 'Other hidden' : 'Other visible'}
+            </button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -598,10 +604,10 @@
                   </button>
                 {/if}
                 {#if hasChildren}
-                  <button class="task-action-btn" title={collapsedChildren.has(todo.id) ? 'Expand subtasks' : 'Collapse subtasks'}
-                    onclick={() => { const s = new Set(collapsedChildren); s.has(todo.id) ? s.delete(todo.id) : s.add(todo.id); collapsedChildren = s; }}>
+                  <button class="task-action-btn" title={expandedChildren.has(todo.id) ? 'Collapse subtasks' : 'Expand subtasks'}
+                    onclick={() => { const s = new Set(expandedChildren); s.has(todo.id) ? s.delete(todo.id) : s.add(todo.id); expandedChildren = s; }}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                      style="transition: transform 0.2s; transform: rotate({collapsedChildren.has(todo.id) ? '-90' : '0'}deg)">
+                      style="transition: transform 0.2s; transform: rotate({expandedChildren.has(todo.id) ? '0' : '-90'}deg)">
                       <polyline points="6 9 12 15 18 9"/>
                     </svg>
                   </button>
@@ -670,7 +676,7 @@
         {#if !isChild}
           {@const children = $todos.filter((t) => t.parent_id === todo.id)}
           {#if children.length > 0 || addingChildFor === todo.id}
-            <div class="children-zone" class:collapsed={collapsedChildren.has(todo.id)}>
+            <div class="children-zone" class:collapsed={!expandedChildren.has(todo.id)}>
               {#each children as child (child.id)}
                 <div class="child-task-wrap {notesOpenId === child.id ? 'child-expanded' : ''}">
                   {@render taskCard(child, true)}
@@ -883,6 +889,8 @@
   .prio-chip.active { border-color: var(--pc); color: var(--pc); background: color-mix(in srgb, var(--pc) 15%, transparent); }
   .tag-chip { color: var(--accent-lt); border-color: var(--accent-bg); }
   .tag-chip.active { background: var(--accent-bg); border-color: var(--accent); }
+  .other-chip { color: var(--text-6); border-style: dashed; }
+  .other-chip.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-lt); border-style: solid; }
 
   .annotation-hint { font-size: 0.75rem; color: var(--text-7); padding: 6px 2px; }
   .annotation-hint code { background: var(--border); border-radius: 4px; padding: 1px 5px; color: var(--accent-purple); }

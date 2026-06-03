@@ -222,6 +222,7 @@ function mergeByUpdated<T extends { id: string; updated_at: string }>(local: T[]
 // ── Initial pull (first visit) ────────────────────────────────────────────────
 
 let initialPullDone = false;
+let syncLock = false;
 
 async function ensureInitialPull(db: IDBDatabase): Promise<void> {
   if (initialPullDone) return;
@@ -317,6 +318,8 @@ export const idbBackend: ApiBackend = {
   },
 
   syncNow: async (): Promise<SyncResult> => {
+    if (syncLock) return { success: false, message: 'Sync already in progress.', timestamp: new Date().toISOString() };
+    syncLock = true;
     const settings = loadSettings();
     const timestamp = new Date().toISOString();
     try {
@@ -327,6 +330,8 @@ export const idbBackend: ApiBackend = {
       return { success: true, message: 'Synced with GitHub.', timestamp };
     } catch (err) {
       return { success: false, message: String(err), timestamp };
+    } finally {
+      syncLock = false;
     }
   },
 

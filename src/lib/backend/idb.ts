@@ -335,8 +335,8 @@ export const idbBackend: ApiBackend = {
     const timestamp = new Date().toISOString();
     try {
       const db = await openDb();
-      await syncToGitHub(settings, db);
       await pullFromGitHub(settings, db);
+      await syncToGitHub(settings, db);
       localStorage.setItem(LAST_SYNC_KEY, timestamp);
       return { success: true, message: 'Synced with GitHub.', timestamp };
     } catch (err) {

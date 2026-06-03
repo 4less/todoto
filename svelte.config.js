@@ -10,6 +10,9 @@ const config = {
     adapter: adapter({
       fallback: "index.html",
     }),
+    paths: {
+      base: process.env.BASE_PATH ?? "",
+    },
   },
 };
 

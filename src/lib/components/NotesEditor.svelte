@@ -6,7 +6,6 @@
   import { setBlockTypeCommand, codeBlockSchema } from '@milkdown/kit/preset/commonmark';
   import { Plugin, PluginKey, TextSelection, NodeSelection } from '@milkdown/kit/prose/state';
   import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
-  import { convertFileSrc, invoke } from '@tauri-apps/api/core';
   import { api, saveTaskNoteImage } from '$lib/api';
   import type { Todo, CommitInfo } from '$lib/types';
 
@@ -43,7 +42,7 @@
       const [src, title] = splitUrlTitle(raw);
       if (src.startsWith('http') || src.startsWith('data:') || ASSET_RE.test(src)) return match;
       const abs = src.startsWith('/') ? src : `${repoPath}/${src}`;
-      return `![${alt}](${convertFileSrc(abs)}${title})`;
+      return `![${alt}](${api.resolveImageUrl(abs, repoPath)}${title})`;
     });
   }
 
@@ -433,8 +432,8 @@
     }, true);
 
     const uploadImage = async (file: File) => {
-      const relPath = await saveTaskNoteImage(todo.id, file);
-      return repoPath ? convertFileSrc(`${repoPath}/${relPath}`) : relPath;
+      const url = await saveTaskNoteImage(todo.id, file);
+      return api.resolveImageUrl(url, repoPath);
     };
 
     const c = new Crepe({
@@ -464,8 +463,8 @@
     });
 
     async function insertImageBlob(blob: Blob) {
-      const relPath = await saveTaskNoteImage(todo.id, blob);
-      const assetUrl = repoPath ? convertFileSrc(`${repoPath}/${relPath}`) : relPath;
+      const url = await saveTaskNoteImage(todo.id, blob);
+      const assetUrl = api.resolveImageUrl(url, repoPath);
       c.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
         const nodeType = view.state.schema.nodes['image-block'];
@@ -486,15 +485,9 @@
       if (items.some((i) => i.kind === 'string')) return;
       e.preventDefault();
       try {
-        const b64 = await invoke<string | null>('read_clipboard_image');
-        if (!b64) return;
-        const relPath = await invoke<string>('save_task_note_image', { id: todo.id, dataB64: b64, ext: 'png' });
-        const assetUrl = repoPath ? convertFileSrc(`${repoPath}/${relPath}`) : relPath;
-        c.editor.action((ctx) => {
-          const view = ctx.get(editorViewCtx);
-          const nodeType = view.state.schema.nodes['image-block'];
-          if (nodeType) view.dispatch(view.state.tr.replaceSelectionWith(nodeType.create({ src: assetUrl, caption: '', ratio: 1 })));
-        });
+        const blob = await api.readClipboardImage();
+        if (!blob) return;
+        await insertImageBlob(blob);
       } catch {}
     }
 

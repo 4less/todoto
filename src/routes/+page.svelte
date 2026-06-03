@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
+  import { base } from '$app/paths';
   import { api } from '$lib/api';
   import { notes, todos, settings, activeView, showSettings, syncState, diskFolders, theme } from '$lib/stores';
   import HomeView from '$lib/components/HomeView.svelte';
@@ -134,7 +135,7 @@
     <div class="sidebar-header">
       {#if !sidebarCollapsed}
         <div class="sidebar-logo">
-          <img src="/logo.png" alt="todoto" class="logo-img" />
+          <img src="{base}/logo.png" alt="todoto" class="logo-img" />
           <span class="logo-text">todoto</span>
         </div>
       {/if}
@@ -205,7 +206,7 @@
   <!-- Mobile drawer -->
   <nav class="drawer {drawerOpen ? 'open' : ''}">
     <div class="drawer-header">
-      <img src="/logo.png" alt="todoto" class="logo-img" />
+      <img src="{base}/logo.png" alt="todoto" class="logo-img" />
       <span class="logo-text">todoto</span>
       <button class="drawer-close" onclick={closeDrawer} aria-label="Close menu">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -233,7 +234,7 @@
 
   <div class="splash {loading ? '' : 'done'}">
     <div class="splash-content">
-      <img src="/logo.png" alt="" class="splash-logo" />
+      <img src="{base}/logo.png" alt="" class="splash-logo" />
       <span class="splash-wordmark">todoto</span>
       <div class="splash-dots">
         <span></span><span></span><span></span>

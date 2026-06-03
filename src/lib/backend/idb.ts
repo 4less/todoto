@@ -135,26 +135,38 @@ async function ghGet(
   return { content: fromBase64(data.content), sha: data.sha };
 }
 
-async function ghPut(
+async function ghPutWithRetry(
   owner: string,
   repo: string,
   token: string,
   path: string,
   content: string,
-  sha?: string
+  sha?: string,
+  retries = 3
 ): Promise<void> {
-  const body: Record<string, string> = { message: 'todoto sync', content: toBase64(content) };
-  if (sha) body.sha = sha;
-  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
-    method: 'PUT',
-    headers: {
-      Authorization: `token ${token}`,
-      Accept: 'application/vnd.github.v3+json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`GitHub ${res.status}: ${await res.text()}`);
+  let currentSha = sha;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const body: Record<string, string> = { message: 'todoto sync', content: toBase64(content) };
+    if (currentSha) body.sha = currentSha;
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 409) {
+      // SHA mismatch — another writer beat us. Fetch the latest SHA and retry.
+      const fresh = await ghGet(owner, repo, token, path);
+      currentSha = fresh?.sha;
+      continue;
+    }
+    if (!res.ok) throw new Error(`GitHub ${res.status}: ${await res.text()}`);
+    return;
+  }
+  throw new Error(`GitHub PUT failed after ${retries} attempts (persistent SHA conflict on ${path}).`);
 }
 
 async function syncToGitHub(settings: Settings, db: IDBDatabase): Promise<void> {
@@ -168,15 +180,14 @@ async function syncToGitHub(settings: Settings, db: IDBDatabase): Promise<void> 
     dbGetAll<Todo>(db, 'todos'),
   ]);
 
-  // Push notes and todos concurrently; fetch existing SHAs first so updates succeed.
   await Promise.all([
     (async () => {
       const existing = await ghGet(owner, repo, token, 'data/notes.json');
-      await ghPut(owner, repo, token, 'data/notes.json', JSON.stringify(notes, null, 2), existing?.sha);
+      await ghPutWithRetry(owner, repo, token, 'data/notes.json', JSON.stringify(notes, null, 2), existing?.sha);
     })(),
     (async () => {
       const existing = await ghGet(owner, repo, token, 'data/todos.json');
-      await ghPut(owner, repo, token, 'data/todos.json', JSON.stringify(todos, null, 2), existing?.sha);
+      await ghPutWithRetry(owner, repo, token, 'data/todos.json', JSON.stringify(todos, null, 2), existing?.sha);
     })(),
   ]);
 }

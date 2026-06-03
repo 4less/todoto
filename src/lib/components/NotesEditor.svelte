@@ -495,9 +495,6 @@
       el.querySelectorAll<HTMLInputElement>('input.caption-input:not([data-upgraded])').forEach(upgradeCaptionInput);
     });
 
-    let rightAddBtn: HTMLButtonElement | null = null;
-    let posHandleObs: MutationObserver | null = null;
-
     notesEditorLoading = true;
     void c.create().then(() => {
       if (destroyed) { notesEditorLoading = false; return; }
@@ -517,60 +514,12 @@
       captionObs.observe(el, { childList: true, subtree: true });
       el.querySelectorAll<HTMLInputElement>('input.caption-input:not([data-upgraded])').forEach(upgradeCaptionInput);
 
-      rightAddBtn = document.createElement('button');
-      rightAddBtn.className = 'mk-right-add';
-      rightAddBtn.title = 'Add block below';
-      rightAddBtn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
-      el.appendChild(rightAddBtn);
-
-      const capturedBtn = rightAddBtn;
-      capturedBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        c.editor.action((ctx) => {
-          const view = ctx.get(editorViewCtx);
-          const { state } = view;
-          const selFrom = state.selection.$from;
-          try {
-            const afterPos = selFrom.depth >= 1 ? selFrom.after(1) : state.doc.content.size;
-            const paragraph = state.schema.nodes.paragraph.createAndFill();
-            if (!paragraph) return;
-            const tr = state.tr.insert(afterPos, paragraph);
-            tr.setSelection(TextSelection.create(tr.doc, afterPos + 1));
-            view.dispatch(tr.scrollIntoView());
-            view.dispatch(view.state.tr.insertText('/'));
-            view.focus();
-          } catch {}
-        });
-      });
-
-      function syncTop() {
-        const handle = el.querySelector<HTMLElement>('.milkdown-block-handle');
-        if (!handle || handle.dataset.show !== 'true') return;
-        const handleRect = handle.getBoundingClientRect();
-        const elRect = el.getBoundingClientRect();
-        capturedBtn.style.top = `${handleRect.top - elRect.top + el.scrollTop}px`;
-      }
-      function tryAttach() {
-        if (posHandleObs) return;
-        const handle = el.querySelector<HTMLElement>('.milkdown-block-handle');
-        if (!handle) return;
-        posHandleObs = new MutationObserver(syncTop);
-        posHandleObs.observe(handle, { attributes: true, attributeFilter: ['data-show', 'style'] });
-        syncTop();
-      }
-      tryAttach();
-      if (!posHandleObs) {
-        const waitObs = new MutationObserver(() => { tryAttach(); if (posHandleObs) waitObs.disconnect(); });
-        waitObs.observe(el, { childList: true, subtree: true });
-      }
     });
 
     return {
       destroy() {
         destroyed = true;
         captionObs.disconnect();
-        posHandleObs?.disconnect();
-        rightAddBtn?.remove();
         removeFloatBtn?.();
         el.removeEventListener('keydown', headingKeyHandler, true);
         el.removeEventListener('paste', handlePaste, true);

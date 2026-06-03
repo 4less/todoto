@@ -781,7 +781,7 @@
   {/if}
 
   <!-- Selection action bar -->
-  {#if selectedIds.size > 1}
+  {#if selectedIds.size > 0}
     <div class="selection-bar">
       {#if confirmDelete}
         {@const delChildCount = [...selectedIds].reduce((n, id) => n + $todos.filter((t) => t.parent_id === id).length, 0)}

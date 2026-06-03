@@ -133,8 +133,12 @@
   let rootTodoCount = $derived($todos.filter((t) => !t.parent_id).length);
 
   let ungroupedPending = $derived(
-    $taskFilterGroupByTags.length > 0 && !$taskFilterHideUngrouped
-      ? pendingTodos.filter((t) => !$taskFilterGroupByTags.some((gt) => t.tags.includes(gt)))
+    $taskFilterGroupByTags.length > 0
+      ? pendingTodos.filter((t) => {
+          if ($taskFilterGroupByTags.some((gt) => t.tags.includes(gt))) return false;
+          // Always show tagless tasks; respect the toggle only for tasks that have tags not in the group.
+          return t.tags.length === 0 || !$taskFilterHideUngrouped;
+        })
       : []
   );
 

@@ -123,6 +123,18 @@ function encodePathSegments(path: string): string {
   return path.split('/').map((s) => encodeURIComponent(s)).join('/');
 }
 
+// Computes the same SHA git uses for a blob: SHA1("blob <byteLen>\0<content>").
+// Used to skip pushing files whose content hasn't changed.
+async function blobSha(content: string): Promise<string> {
+  const bytes = new TextEncoder().encode(content);
+  const header = new TextEncoder().encode(`blob ${bytes.length}\0`);
+  const buf = new Uint8Array(header.length + bytes.length);
+  buf.set(header);
+  buf.set(bytes, header.length);
+  const hash = await crypto.subtle.digest('SHA-1', buf);
+  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 async function ghGet(
   owner: string,
   repo: string,
@@ -290,26 +302,34 @@ async function syncToGitHub(settings: Settings, db: IDBDatabase): Promise<void> 
   // Fetch the current tree once so we have SHAs for all existing files.
   const tree = await ghListTree(owner, repo, token);
 
-  const puts: Promise<void>[] = [];
+  // Build list of files to push, skipping ones whose content hasn't changed.
+  const filesToPush: Array<{ path: string; content: string; sha: string | undefined }> = [];
 
-  // todos.json
-  puts.push(ghPutWithRetry(owner, repo, token, 'todos.json', serializeTodos(todos), tree.get('todos.json')));
+  const addIfChanged = async (path: string, content: string) => {
+    const remoteSha = tree.get(path);
+    if (remoteSha) {
+      const localSha = await blobSha(content);
+      if (localSha === remoteSha) return; // unchanged — skip
+    }
+    filesToPush.push({ path, content, sha: remoteSha });
+  };
 
-  // task-notes/{id}.md for todos that have inline notes
+  await addIfChanged('todos.json', serializeTodos(todos));
+
   for (const todo of todos) {
     if (todo.notes != null && todo.notes.trim() !== '') {
-      const p = `task-notes/${todo.id}.md`;
-      puts.push(ghPutWithRetry(owner, repo, token, p, todo.notes, tree.get(p)));
+      await addIfChanged(`task-notes/${todo.id}.md`, todo.notes);
     }
   }
 
-  // individual .md files for notes
   for (const note of notes) {
-    const p = noteFilePath(note);
-    puts.push(ghPutWithRetry(owner, repo, token, p, serializeNote(note), tree.get(p)));
+    await addIfChanged(noteFilePath(note), serializeNote(note));
   }
 
-  await Promise.all(puts);
+  // Push sequentially — concurrent commits to the same repo cause 409 races.
+  for (const { path, content, sha } of filesToPush) {
+    await ghPutWithRetry(owner, repo, token, path, content, sha);
+  }
 }
 
 async function pullFromGitHub(settings: Settings, db: IDBDatabase): Promise<boolean> {

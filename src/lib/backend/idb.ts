@@ -104,7 +104,6 @@ function parseRepoUrl(url: string): { owner: string; repo: string } | null {
 }
 
 function toBase64(str: string): string {
-  // Encode UTF-8 string to base64 safely.
   return btoa(
     encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, (_, p1) =>
       String.fromCharCode(parseInt(p1, 16))
@@ -120,15 +119,20 @@ function fromBase64(b64: string): string {
   );
 }
 
+function encodePathSegments(path: string): string {
+  return path.split('/').map((s) => encodeURIComponent(s)).join('/');
+}
+
 async function ghGet(
   owner: string,
   repo: string,
   token: string,
   path: string
 ): Promise<{ content: string; sha: string } | null> {
-  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
-    headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json' },
-  });
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/contents/${encodePathSegments(path)}`,
+    { headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json' } }
+  );
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`GitHub ${res.status}: ${await res.text()}`);
   const data = await res.json();
@@ -148,17 +152,19 @@ async function ghPutWithRetry(
   for (let attempt = 0; attempt < retries; attempt++) {
     const body: Record<string, string> = { message: 'todoto sync', content: toBase64(content) };
     if (currentSha) body.sha = currentSha;
-    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
-      method: 'PUT',
-      headers: {
-        Authorization: `token ${token}`,
-        Accept: 'application/vnd.github.v3+json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${encodePathSegments(path)}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `token ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }
+    );
     if (res.status === 409) {
-      // SHA mismatch — another writer beat us. Fetch the latest SHA and retry.
       const fresh = await ghGet(owner, repo, token, path);
       currentSha = fresh?.sha;
       continue;
@@ -168,6 +174,107 @@ async function ghPutWithRetry(
   }
   throw new Error(`GitHub PUT failed after ${retries} attempts (persistent SHA conflict on ${path}).`);
 }
+
+// Returns path → sha for all tracked files (.md + todos.json).
+async function ghListTree(
+  owner: string,
+  repo: string,
+  token: string
+): Promise<Map<string, string>> {
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`,
+    { headers: { Authorization: `token ${token}`, Accept: 'application/vnd.github.v3+json' } }
+  );
+  // 404 = repo not found; 409 = repo exists but empty (no commits yet)
+  if (res.status === 404 || res.status === 409) return new Map();
+  if (!res.ok) throw new Error(`GitHub tree: ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const map = new Map<string, string>();
+  for (const item of data.tree) {
+    if (item.type === 'blob' && (item.path.endsWith('.md') || item.path === 'todos.json')) {
+      map.set(item.path, item.sha);
+    }
+  }
+  return map;
+}
+
+// ── Note file format (matches Rust backend exactly) ──────────────────────────
+
+function sanitizeFilename(s: string): string {
+  return s.replace(/[/\\:*?"<>|]/g, '_').trim();
+}
+
+function noteFilePath(note: Note): string {
+  // Use the stored file_path if we pulled this note from GitHub,
+  // otherwise derive from folder + title (same logic as the Rust backend).
+  if (note.file_path) return note.file_path;
+  const name = `${sanitizeFilename(note.title)}.md`;
+  return note.folder ? `${note.folder}/${name}` : name;
+}
+
+function serializeNote(note: Note): string {
+  const tags = note.tags.join(', ');
+  return `---\nid: ${note.id}\ntitle: ${note.title}\npinned: ${note.pinned}\ntags: ${tags}\ncreated_at: ${note.created_at}\nupdated_at: ${note.updated_at}\n---\n${note.content}`;
+}
+
+function parseNoteFile(content: string, filePath: string): Note | null {
+  let fmStr = '';
+  let body = content;
+
+  if (content.startsWith('---\n')) {
+    const rest = content.slice(4);
+    const endIdx = rest.indexOf('\n---\n');
+    if (endIdx !== -1) {
+      fmStr = rest.slice(0, endIdx);
+      body = rest.slice(endIdx + 5);
+    }
+  }
+
+  let id = '', title = '', pinned = false, tags: string[] = [];
+  let created_at = new Date().toISOString();
+  let updated_at = new Date().toISOString();
+
+  for (const line of fmStr.split('\n')) {
+    const colonIdx = line.indexOf(': ');
+    if (colonIdx === -1) continue;
+    const key = line.slice(0, colonIdx).trim();
+    const value = line.slice(colonIdx + 2).trim();
+    if (key === 'id') id = value;
+    else if (key === 'title') title = value;
+    else if (key === 'pinned') pinned = value === 'true';
+    else if (key === 'tags') tags = value.split(',').map((t) => t.trim()).filter(Boolean);
+    else if (key === 'created_at') created_at = value;
+    else if (key === 'updated_at') updated_at = value;
+  }
+
+  if (!id) id = uuid();
+  if (!title) {
+    const base = filePath.split('/').pop() ?? filePath;
+    title = base.endsWith('.md') ? base.slice(0, -3) : base;
+  }
+
+  const parts = filePath.split('/');
+  const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+
+  return { id, title, content: body, folder, pinned, tags, created_at, updated_at, file_path: filePath };
+}
+
+// ── Todos format (matches Rust backend: { todos: [...], version: 1 }) ─────────
+
+interface TodoData { todos: Todo[]; version: number; }
+
+function serializeTodos(todos: Todo[]): string {
+  // Strip inline notes (they live in task-notes/{id}.md), keep note_path.
+  const stripped = todos.map((t) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { notes: _notes, ...rest } = t;
+    if (t.notes && !rest.note_path) rest.note_path = `task-notes/${t.id}.md`;
+    return rest;
+  });
+  return JSON.stringify({ todos: stripped, version: 1 }, null, 2);
+}
+
+// ── Sync ──────────────────────────────────────────────────────────────────────
 
 async function syncToGitHub(settings: Settings, db: IDBDatabase): Promise<void> {
   const parsed = parseRepoUrl(settings.repo_url);
@@ -180,16 +287,29 @@ async function syncToGitHub(settings: Settings, db: IDBDatabase): Promise<void> 
     dbGetAll<Todo>(db, 'todos'),
   ]);
 
-  await Promise.all([
-    (async () => {
-      const existing = await ghGet(owner, repo, token, 'data/notes.json');
-      await ghPutWithRetry(owner, repo, token, 'data/notes.json', JSON.stringify(notes, null, 2), existing?.sha);
-    })(),
-    (async () => {
-      const existing = await ghGet(owner, repo, token, 'data/todos.json');
-      await ghPutWithRetry(owner, repo, token, 'data/todos.json', JSON.stringify(todos, null, 2), existing?.sha);
-    })(),
-  ]);
+  // Fetch the current tree once so we have SHAs for all existing files.
+  const tree = await ghListTree(owner, repo, token);
+
+  const puts: Promise<void>[] = [];
+
+  // todos.json
+  puts.push(ghPutWithRetry(owner, repo, token, 'todos.json', serializeTodos(todos), tree.get('todos.json')));
+
+  // task-notes/{id}.md for todos that have inline notes
+  for (const todo of todos) {
+    if (todo.notes != null && todo.notes.trim() !== '') {
+      const p = `task-notes/${todo.id}.md`;
+      puts.push(ghPutWithRetry(owner, repo, token, p, todo.notes, tree.get(p)));
+    }
+  }
+
+  // individual .md files for notes
+  for (const note of notes) {
+    const p = noteFilePath(note);
+    puts.push(ghPutWithRetry(owner, repo, token, p, serializeNote(note), tree.get(p)));
+  }
+
+  await Promise.all(puts);
 }
 
 async function pullFromGitHub(settings: Settings, db: IDBDatabase): Promise<boolean> {
@@ -198,24 +318,56 @@ async function pullFromGitHub(settings: Settings, db: IDBDatabase): Promise<bool
   const { owner, repo } = parsed;
   const token = settings.git_token;
 
-  const [notesFile, todosFile] = await Promise.all([
-    ghGet(owner, repo, token, 'data/notes.json'),
-    ghGet(owner, repo, token, 'data/todos.json'),
+  const tree = await ghListTree(owner, repo, token);
+  if (tree.size === 0) return false;
+
+  // Fetch all tracked files in parallel.
+  const notePaths = [...tree.keys()].filter(
+    (p) => p.endsWith('.md') && !p.startsWith('task-notes/')
+  );
+  const taskNotePaths = [...tree.keys()].filter((p) => p.startsWith('task-notes/'));
+
+  const [todosRaw, ...noteResults] = await Promise.all([
+    tree.has('todos.json') ? ghGet(owner, repo, token, 'todos.json') : Promise.resolve(null),
+    ...notePaths.map((p) => ghGet(owner, repo, token, p)),
   ]);
 
-  const remoteNotes: Note[] = notesFile ? JSON.parse(notesFile.content) : [];
-  const remoteTodos: Todo[] = todosFile ? JSON.parse(todosFile.content) : [];
+  const taskNoteMap = new Map<string, string>();
+  await Promise.all(
+    taskNotePaths.map(async (p) => {
+      const r = await ghGet(owner, repo, token, p);
+      if (r) {
+        // path is task-notes/{id}.md → extract id
+        const id = p.slice('task-notes/'.length, -'.md'.length);
+        taskNoteMap.set(id, r.content);
+      }
+    })
+  );
 
-  // Merge: remote wins for items not in local, local wins for items modified more recently.
-  const localNotes = await dbGetAll<Note>(db, 'notes');
-  const localTodos = await dbGetAll<Todo>(db, 'todos');
+  // Parse todos
+  let remoteTodos: Todo[] = [];
+  if (todosRaw) {
+    const data: TodoData = JSON.parse(todosRaw.content);
+    remoteTodos = (data.todos ?? []).map((t) => ({
+      ...t,
+      notes: taskNoteMap.get(t.id) ?? t.notes ?? null,
+    }));
+  }
 
-  const mergedNotes = mergeByUpdated(localNotes, remoteNotes);
-  const mergedTodos = mergeByUpdated(localTodos, remoteTodos);
+  // Parse notes
+  const remoteNotes: Note[] = noteResults
+    .map((r, i) => (r ? parseNoteFile(r.content, notePaths[i]) : null))
+    .filter((n): n is Note => n !== null);
+
+  // Merge with local (newer updated_at wins)
+  const [localNotes, localTodos] = await Promise.all([
+    dbGetAll<Note>(db, 'notes'),
+    dbGetAll<Todo>(db, 'todos'),
+  ]);
 
   await Promise.all([
-    dbPutMany(db, 'notes', mergedNotes),
-    dbPutMany(db, 'todos', mergedTodos),
+    dbPutMany(db, 'notes', mergeByUpdated(localNotes, remoteNotes)),
+    dbPutMany(db, 'todos', mergeByUpdated(localTodos, remoteTodos)),
   ]);
   return true;
 }

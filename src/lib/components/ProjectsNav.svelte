@@ -12,6 +12,13 @@
     onApply: (project: Project) => void;
   } = $props();
 
+  // Move the modal to <body> so it escapes the mobile drawer's transform,
+  // which would otherwise act as the containing block for position: fixed.
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return { destroy() { if (node.parentNode) node.parentNode.removeChild(node); } };
+  }
+
   // ── Editor modal state ──────────────────────────────────────────────────────
   let editorOpen = $state(false);
   let editId = $state<string | null>(null); // null = creating new
@@ -124,6 +131,7 @@
 </div>
 
 {#if editorOpen}
+<div use:portal>
   <div class="editor-backdrop" onclick={closeEditor} aria-hidden="true"></div>
   <div class="editor" role="dialog" aria-modal="true">
     <div class="editor-head">
@@ -192,6 +200,7 @@
       <button class="btn-save" onclick={save} disabled={!canSave}>{editId ? 'Save' : 'Create'}</button>
     </div>
   </div>
+</div>
 {/if}
 
 <style>

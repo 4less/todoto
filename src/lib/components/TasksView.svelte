@@ -742,12 +742,6 @@
         </div><!-- end task-wrap -->
   {/snippet}
 
-  {#if !focusMode}
-  <div class="annotation-hint">
-    Markdown syntax: <code>- [ ] Title #tag @YYYY-MM-DD !high</code> — write tasks in Docs and they sync here.
-  </div>
-  {/if}
-
   {#if focusMode && focusTodo}
     <div class="focus-view">
       {@render taskCard(focusTodo, !!focusTodo.parent_id)}
@@ -920,9 +914,6 @@
   .tag-chip.active { background: var(--accent-bg); border-color: var(--accent); }
   .other-chip { color: var(--text-6); border-style: dashed; }
   .other-chip.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-lt); border-style: solid; }
-
-  .annotation-hint { font-size: 0.75rem; color: var(--text-7); padding: 6px 2px; }
-  .annotation-hint code { background: var(--border); border-radius: 4px; padding: 1px 5px; color: var(--accent-purple); }
 
   .task-list { display: flex; flex-direction: column; gap: 8px; }
   .empty { color: var(--text-7); font-size: 0.875rem; padding: 20px 0; text-align: center; }

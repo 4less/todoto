@@ -32,6 +32,16 @@ export interface Todo {
   parent_id?: string | null;
 }
 
+// A user-defined tag-based shortcut shown in the sidebar/drawer.
+// Clicking one jumps to the Tasks view filtered to its tag(s).
+export interface Project {
+  id: string;
+  name: string;
+  tags: string[];
+  icon: string;  // key into PROJECT_ICONS
+  color: string; // hex colour
+}
+
 export interface Settings {
   repo_path: string;
   repo_url: string;

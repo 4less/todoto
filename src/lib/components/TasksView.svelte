@@ -584,9 +584,10 @@
         {@const isSelected = selectedIds.has(todo.id)}
         {@const isActive = activeId === todo.id}
         {@const hasChildren = !isChild && $todos.some((t) => t.parent_id === todo.id)}
+        {@const childTimerHidden = hasChildren && !expandedChildren.has(todo.id) && $todos.some((t) => t.parent_id === todo.id && $activeTimers.has(t.id))}
 
         {@const hasNotes = notesOpenId === todo.id}
-        <div class="task-wrap {isChild ? 'child-wrap' : ''} {todo.done ? 'done' : ''} {isTimerActive ? 'wrap-timer' : ''} {isSelected ? 'wrap-selected' : ''} {isActive ? 'wrap-active' : ''} {hasNotes ? 'with-notes' : ''}">
+        <div class="task-wrap {isChild ? 'child-wrap' : ''} {todo.done ? 'done' : ''} {isTimerActive || childTimerHidden ? 'wrap-timer' : ''} {isSelected ? 'wrap-selected' : ''} {isActive ? 'wrap-active' : ''} {hasNotes ? 'with-notes' : ''}">
         <div class="task-card">
           {#if editId === todo.id}
             <div class="edit-form">
@@ -1152,13 +1153,36 @@
     padding: 0; overflow-y: auto;
   }
 
-  /* Focus mode: notes panel fills all remaining space */
+  /* Focus mode: todo + notes fill the whole area as one flush, borderless surface */
   .focus-mode {
     padding-bottom: 0;
   }
   .focus-mode .task-card { border-color: transparent; }
   .focus-mode .focus-view {
     min-height: 0;
+    /* break out of the page's horizontal padding to span edge-to-edge */
+    margin: 0 -32px;
+    border-top: 1px solid var(--border);
+  }
+  .focus-mode .focus-view .task-wrap {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+  }
+  /* The full-height left bar would span the whole focus surface — confine the
+     running-timer indicator to the todo header instead. */
+  .focus-mode .focus-view .task-wrap.wrap-timer::before { display: none; }
+  .focus-mode .focus-view .task-wrap.wrap-timer .task-card { position: relative; }
+  .focus-mode .focus-view .task-wrap.wrap-timer .task-card::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+    background: var(--green); z-index: 1;
+  }
+  @media (max-width: 600px) {
+    .focus-mode .focus-view { margin: 0 -16px; }
   }
   /* Selection bar */
   .selection-bar {

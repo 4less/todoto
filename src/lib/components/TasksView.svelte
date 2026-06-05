@@ -599,6 +599,7 @@
               </div>
             </div>
             {#if isActive || isSelected}
+              <div class="card-actions">
               {#if isTimerActive && timerStartMs !== undefined}
                 <span class="timer-running">{formatElapsed(timerStartMs)}</span>
               {/if}
@@ -644,6 +645,7 @@
                   onclick={() => { selectedIds = new Set([todo.id]); confirmDelete = true; }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
                 </button>
+              </div>
               </div>
             {/if}
           {/if}
@@ -978,13 +980,19 @@
 
   .task-card {
     background: transparent; border: none; border-radius: 0;
-    padding: 14px 18px; display: flex; align-items: center; gap: 12px;
+    padding: 14px 18px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   }
+
+  /* Action controls (focus / play / edit etc.) grouped so they can flow onto
+     their own row when there isn't room for a substantial slice of the title. */
+  .card-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
   .task-card.done { opacity: 1; } /* opacity handled by task-wrap */
 
   .check-btn { background: none; border: none; cursor: pointer; padding: 0; flex-shrink: 0; display: flex; }
 
-  .task-body { flex: 1; min-width: 0; cursor: pointer; align-self: stretch; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+  /* min-width keeps a "substantial" amount of title on the first line; once the
+     remaining space can't fit the action bar, the actions wrap to a new row. */
+  .task-body { flex: 1; min-width: 10rem; cursor: pointer; align-self: stretch; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
   .task-title-row { display: flex; align-items: center; gap: 8px; }
   .priority-bar { width: 3px; height: 18px; border-radius: 2px; flex-shrink: 0; }
   .task-title { font-size: 0.95rem; font-weight: 400; color: var(--text-1); flex: 1; min-width: 0; word-break: break-word; }
@@ -1150,19 +1158,22 @@
   .task-card.child-card .task-title { font-size: 0.85rem; }
 
   /* Break a child card/panel out of the children-zone indent when notes are open.
-     42px = children-zone margin-left(30) + border-left(2) + padding-left(10) */
+     left offset 34px = margin-left(22) + border-left(2) + padding-left(10);
+     extra 12px on width re-covers the zone's padding-right. */
   .children-zone .child-task-wrap { display: contents; }
   .children-zone .child-task-wrap.child-expanded {
     display: block;
     box-sizing: border-box;
-    margin-left: -42px;
-    width: calc(100% + 42px);
+    margin-left: -34px;
+    width: calc(100% + 46px);
   }
 
   /* The indented zone that wraps child cards */
   .children-zone {
-    margin-left: 30px;
+    margin-left: 22px;
     padding-left: 10px;
+    /* right padding keeps subtask borders clear of the parent card's edge */
+    padding-right: 12px;
     border-left: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
     display: flex;
     flex-direction: column;

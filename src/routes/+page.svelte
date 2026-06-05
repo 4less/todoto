@@ -4,7 +4,8 @@
   import { base } from '$app/paths';
   import { api } from '$lib/api';
   import { notes, todos, settings, activeView, showSettings, syncState, diskFolders, theme,
-    projects, activeProjectId, taskFilterTag, taskFilterGroupByTags, taskFilterHideUngrouped } from '$lib/stores';
+    projects, activeProjectId, taskFilterTag, taskFilterGroupByTags, taskFilterHideUngrouped,
+    activeTimers, focusRequest } from '$lib/stores';
   import type { Project } from '$lib/types';
   import HomeView from '$lib/components/HomeView.svelte';
   import TasksView from '$lib/components/TasksView.svelte';
@@ -24,11 +25,22 @@
   function navMain(id: typeof $activeView) { activeProjectId.set(null); activeView.set(id); }
   function navTo(id: typeof $activeView) { navMain(id); closeDrawer(); }
 
-  // Apply a project shortcut: jump to Tasks, grouped by the project's tags.
+  // Jump straight to the running ("live") task in focus mode, from anywhere in the app.
+  function jumpToLiveFocus() {
+    const liveId = [...get(activeTimers).keys()][0];
+    if (!liveId) return;
+    activeView.set('tasks');
+    focusRequest.set(liveId);
+    closeDrawer();
+  }
+
+  // Apply a project shortcut: jump to Tasks, prefiltered to the project's tags.
+  // The project tags become a hard constraint (handled in TasksView), so we start
+  // from a clean per-page filter — the user can then filter/group within the project.
   function applyProject(p: Project) {
     taskFilterTag.set('');
-    taskFilterGroupByTags.set([...p.tags]);
-    taskFilterHideUngrouped.set(true);
+    taskFilterGroupByTags.set([]);
+    taskFilterHideUngrouped.set(false);
     activeProjectId.set(p.id);
     activeView.set('tasks');
     closeDrawer();
@@ -177,6 +189,15 @@
         </button>
       {/each}
 
+      {#if $activeTimers.size > 0}
+        <button class="nav-item live-focus" onclick={jumpToLiveFocus}
+          title={sidebarCollapsed ? 'Focus running task' : ''}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="12" rx="10" ry="6"/><circle cx="12" cy="12" r="3"/></svg>
+          {#if !sidebarCollapsed}<span>Focus task</span>{/if}
+          <span class="live-pip"></span>
+        </button>
+      {/if}
+
       <ProjectsNav collapsed={sidebarCollapsed} onApply={applyProject} />
     </div>
 
@@ -237,6 +258,14 @@
           <span>{item.label}</span>
         </button>
       {/each}
+
+      {#if $activeTimers.size > 0}
+        <button class="drawer-item live-focus" onclick={jumpToLiveFocus}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="12" rx="10" ry="6"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>Focus task</span>
+          <span class="live-pip"></span>
+        </button>
+      {/if}
 
       <ProjectsNav collapsed={false} onApply={applyProject} />
     </div>
@@ -328,6 +357,19 @@
   .nav-item:hover { background: var(--border); color: var(--text-2); }
   .nav-item.active { background: var(--accent-bg); color: var(--accent); }
   .sidebar.collapsed .nav-item { justify-content: center; padding: 10px; gap: 0; }
+
+  /* Quick-jump to the running task — green to match the live timer bar. */
+  .live-focus { color: var(--green); position: relative; }
+  .live-focus:hover { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+  .live-pip {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0;
+    margin-left: auto; animation: live-pip-pulse 1.5s ease-in-out infinite;
+  }
+  .sidebar.collapsed .live-focus { gap: 0; }
+  .sidebar.collapsed .live-focus .live-pip {
+    position: absolute; top: 6px; right: 6px; margin-left: 0;
+  }
+  @keyframes live-pip-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
   .sidebar-footer {
     display: flex; flex-direction: column; gap: 4px;

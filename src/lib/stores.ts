@@ -28,6 +28,19 @@ export const projects = writable<Project[]>([]);
 // Which project filter is currently applied — device-local, drives nav highlight.
 export const activeProjectId = localStore<string | null>('todoto-active-project', null);
 
+// The currently-applied project (or null). Its tags act as a hard prefilter on the
+// Tasks view: only tasks carrying at least one of these tags are shown, the tags are
+// hidden from the page filter/group chips, and new tasks inherit them automatically.
+export const activeProject = derived(
+  [projects, activeProjectId],
+  ([$projects, $id]) => ($id ? $projects.find((p) => p.id === $id) ?? null : null)
+);
+export const activeProjectTags = derived(activeProject, ($p) => $p?.tags ?? []);
+
+// Set to a todo id to ask the Tasks view to open that task in focus mode. The
+// Tasks view consumes and clears it. Lets the sidebar jump back to the running task.
+export const focusRequest = writable<string | null>(null);
+
 export const activeView = writable<View>('home');
 export const theme = writable<'system' | 'light' | 'dark' | 'midnight' | 'forest'>('system');
 export const activeTimers = writable<Map<string, number>>(new Map());

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, settings } from '$lib/stores';
+  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, settings, activeProject, activeProjectTags, focusRequest } from '$lib/stores';
   import { api } from '$lib/api';
   import type { Todo, WorkSession } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
@@ -64,9 +64,33 @@
   let focusMode = $state(false);
   let focusTodoId = $state<string | null>(null);
   let focusTodo = $derived(focusTodoId ? ($todos.find((t) => t.id === focusTodoId) ?? null) : null);
+  // The currently-running ("live") task, if any — drives the header focus shortcut.
+  let liveTodoId = $derived([...$activeTimers.keys()][0] ?? null);
 
   $effect(() => {
     if (focusMode && focusTodo && notesOpenId !== focusTodo.id) openNotes(focusTodo);
+  });
+
+  // Honour a focus request coming from the sidebar (jump to the running task).
+  $effect(() => {
+    const reqId = $focusRequest;
+    if (reqId && $todos.some((t) => t.id === reqId)) {
+      focusTodoId = reqId;
+      focusMode = true;
+      focusRequest.set(null);
+    }
+  });
+
+  // Switching projects (the view stays mounted) should leave focus mode so the
+  // newly-selected project's list is shown — the sidebar button jumps back in.
+  let lastProjectId: string | null | undefined = undefined;
+  $effect(() => {
+    const pid = $activeProject?.id ?? null;
+    if (lastProjectId !== undefined && pid !== lastProjectId) {
+      focusMode = false;
+      focusTodoId = null;
+    }
+    lastProjectId = pid;
   });
 
   // ── Notes state ───────────────────────────────────────────────────────────
@@ -90,12 +114,24 @@
   });
 
   // ── Derived ───────────────────────────────────────────────────────────────
-  let allTags = $derived([...new Set($todos.flatMap((t) => t.tags))].sort().filter((tag) => tag !== 'other'));
+  // Tags available to the page filter exclude the active project's prefilter tags:
+  // those are already implied, so you can only filter/group by the remaining tags.
+  let allTags = $derived(
+    [...new Set($todos.flatMap((t) => t.tags))]
+      .sort()
+      .filter((tag) => tag !== 'other' && !$activeProjectTags.includes(tag))
+  );
+
+  // Project tags that have leaked into the persisted group filter are ignored so the
+  // prefilter tags never appear as group sections.
+  let groupTags = $derived($taskFilterGroupByTags.filter((t) => !$activeProjectTags.includes(t)));
 
   let filtered = $derived(
     $todos
       .filter((t) => {
         if (t.parent_id) return false; // children always appear under their parent
+        // Project prefilter: only tasks carrying at least one project tag are in scope.
+        if ($activeProjectTags.length > 0 && !$activeProjectTags.some((pt) => t.tags.includes(pt))) return false;
         if ($taskFilterStatus === 'pending' && t.done) return false;
         if ($taskFilterStatus === 'done' && !t.done) return false;
         if ($taskFilterPriority && t.priority !== $taskFilterPriority) return false;
@@ -131,12 +167,17 @@
 
   let pendingTodos = $derived(filtered.filter((t) => !t.done));
   let doneTodos = $derived(filtered.filter((t) => t.done));
-  let rootTodoCount = $derived($todos.filter((t) => !t.parent_id).length);
+  let rootTodoCount = $derived(
+    $todos.filter((t) =>
+      !t.parent_id &&
+      ($activeProjectTags.length === 0 || $activeProjectTags.some((pt) => t.tags.includes(pt)))
+    ).length
+  );
 
   let ungroupedPending = $derived(
-    $taskFilterGroupByTags.length > 0
+    groupTags.length > 0
       ? pendingTodos.filter((t) => {
-          if ($taskFilterGroupByTags.some((gt) => t.tags.includes(gt))) return false;
+          if (groupTags.some((gt) => t.tags.includes(gt))) return false;
           // Always show tagless tasks; respect the toggle only for tasks that have tags not in the group.
           return t.tags.length === 0 || !$taskFilterHideUngrouped;
         })
@@ -146,7 +187,7 @@
   const priorityRank: Record<string, number> = { high: 0, medium: 1, low: 2 };
 
   let sortedGroups = $derived(
-    $taskFilterGroupByTags
+    groupTags
       .map((tag) => ({ tag, todos: pendingTodos.filter((t) => t.tags.includes(tag)) }))
       .filter((g) => g.todos.length > 0)
       .sort((a, b) => {
@@ -212,7 +253,9 @@
 
   async function createTodo() {
     if (!newTitle.trim()) return;
-    const tags = newTagInput.split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim()).filter(Boolean);
+    const typedTags = newTagInput.split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim()).filter(Boolean);
+    // Tasks created inside a project automatically carry its tags, so they stay in scope.
+    const tags = [...new Set([...$activeProjectTags, ...typedTags])];
     const created = await api.saveTodo({
       id: '', title: newTitle.trim(), done: false, priority: newPriority,
       due_date: newDue || null, tags,
@@ -383,22 +426,37 @@
     }
   }
 
+  // Clicking anywhere on the page that isn't a todo (or the page chrome) acts as a
+  // reset area: collapse the active card, close its notes, and hide subtasks.
+  function handleBackgroundClick(e: MouseEvent) {
+    if ((e.target as HTMLElement).closest('.task-wrap, .page-header, .new-task-form, .filter-bar, .selection-bar')) return;
+    activeId = null;
+    notesOpenId = null;
+    expandedChildren = new Set();
+  }
+
 </script>
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<div class="tasks" class:focus-mode={focusMode}>
+<div class="tasks" class:focus-mode={focusMode} onclick={handleBackgroundClick}>
   <header class="page-header">
     <div>
-      <h1>Tasks</h1>
-      <p class="subtitle">{filtered.length} of {rootTodoCount} tasks</p>
+      <h1>{$activeProject ? $activeProject.name : 'Tasks'}</h1>
+      <p class="subtitle">
+        {filtered.length} of {rootTodoCount} tasks
+        {#if $activeProject}<span class="scope-tags">· {$activeProjectTags.map((t) => '#' + t).join(' ')}</span>{/if}
+      </p>
     </div>
     <div class="header-actions">
       {#if $activeTimers.size > 0}
         <button
           class="focus-toggle {focusMode ? 'active' : ''}"
-          onclick={() => (focusMode = !focusMode)}
-          title="Focus mode"
+          onclick={() => {
+            if (focusMode) { focusMode = false; focusTodoId = null; }
+            else if (liveTodoId) { focusTodoId = liveTodoId; focusMode = true; }
+          }}
+          title="Focus the running task"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M3 9V5a2 2 0 0 1 2-2h4M3 15v4a2 2 0 0 0 2 2h4M21 9V5a2 2 0 0 0-2-2h-4M21 15v4a2 2 0 0 1-2 2h-4"/></svg>
           Focus
@@ -480,7 +538,7 @@
       {#if allTags.length > 0}
         <div class="filter-chips">
           <span class="filter-label">Group:</span>
-          {#if $taskFilterGroupByTags.length > 0}
+          {#if groupTags.length > 0}
             <button class="chip group-clear-chip" onclick={() => ($taskFilterGroupByTags = [])}>clear</button>
           {/if}
           {#each allTags as tag}
@@ -495,7 +553,7 @@
               }}
             >#{tag}</button>
           {/each}
-          {#if $taskFilterGroupByTags.length > 0}
+          {#if groupTags.length > 0}
             <button class="chip other-chip {$taskFilterHideUngrouped ? 'active' : ''}"
               onclick={() => ($taskFilterHideUngrouped = !$taskFilterHideUngrouped)}
               title="Toggle visibility of ungrouped todos">
@@ -554,6 +612,8 @@
                 } else {
                   if (activeId === todo.id) {
                     activeId = null;
+                    // Collapsing the card also retracts its subtasks.
+                    if (hasChildren) { const s = new Set(expandedChildren); s.delete(todo.id); expandedChildren = s; }
                   } else {
                     activeId = todo.id;
                     if (hasChildren) { const s = new Set(expandedChildren); s.add(todo.id); expandedChildren = s; }
@@ -753,16 +813,10 @@
       {@render taskCard(focusTodo, !!focusTodo.parent_id)}
     </div>
   {:else}
-  <div class="task-list" onclick={(e) => {
-    if (!(e.target as HTMLElement).closest('.task-card, .sessions-panel, .children-zone, .child-task-wrap, .child-add-form, .add-child-bottom-btn, .group-divider, .section-divider')) {
-      activeId = null;
-      notesOpenId = null;
-      expandedChildren = new Set();
-    }
-  }}>
+  <div class="task-list">
     {#if filtered.length === 0}
       <div class="empty">No tasks match the current filters.</div>
-    {:else if $taskFilterGroupByTags.length > 0}
+    {:else if groupTags.length > 0}
       <!-- Grouped view — sorted by earliest due date, then best priority -->
       {#each sortedGroups as { tag: groupTag, todos: groupTodos }}
         <div class="group-divider">
@@ -847,6 +901,7 @@
   .header-actions { display: flex; align-items: center; gap: 8px; }
   h1 { font-size: 1.6rem; font-weight: 700; color: var(--text-1); }
   .subtitle { color: var(--text-6); font-size: 0.875rem; margin-top: 2px; }
+  .scope-tags { color: var(--accent-lt); }
 
   .filter-toggle {
     width: 36px; height: 36px; border-radius: 10px; border: 1px solid var(--border-2);
@@ -953,15 +1008,22 @@
 
   /* ── Task wrap (unified border container) ── */
   .task-wrap {
+    position: relative;
     border: 1px solid var(--border); border-radius: 14px;
     background: var(--surface); overflow: hidden;
     transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
   }
   .task-wrap:hover { border-color: var(--border-2); }
   .task-wrap.done { opacity: 0.55; }
-  .task-wrap.wrap-timer { border-color: var(--accent); }
-  .task-wrap.wrap-active { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
-  .task-wrap.wrap-selected { border-color: var(--accent); background: var(--accent-bg); }
+  /* Live (timer running) — green vertical bar down the left edge. */
+  .task-wrap.wrap-timer::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+    background: var(--green); z-index: 1;
+  }
+  /* Active (clicked) just reveals the action bar — keep it neutral. The blue
+     accent surround is reserved for multi-select. */
+  .task-wrap.wrap-active { border-color: var(--border-2); }
+  .task-wrap.wrap-selected { border-color: var(--accent); background: var(--accent-bg); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
   .task-wrap.child-wrap { border-radius: 10px; }
 
   .task-card > .task-action-btn { align-self: center; }

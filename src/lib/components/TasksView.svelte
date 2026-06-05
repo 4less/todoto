@@ -67,8 +67,18 @@
   // The currently-running ("live") task, if any — drives the header focus shortcut.
   let liveTodoId = $derived([...$activeTimers.keys()][0] ?? null);
 
+  // Auto-open the focus task's notes once when entering focus mode (or when the
+  // focus task changes) — but don't fight the user if they then close them.
+  let lastFocusOpenedId: string | null = null;
   $effect(() => {
-    if (focusMode && focusTodo && notesOpenId !== focusTodo.id) openNotes(focusTodo);
+    if (focusMode && focusTodo) {
+      if (lastFocusOpenedId !== focusTodo.id) {
+        lastFocusOpenedId = focusTodo.id;
+        openNotes(focusTodo);
+      }
+    } else {
+      lastFocusOpenedId = null;
+    }
   });
 
   // Honour a focus request coming from the sidebar (jump to the running task).

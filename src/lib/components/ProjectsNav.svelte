@@ -252,7 +252,7 @@
   .editor-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,0.5); }
   .editor {
     position: fixed; z-index: 301; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    width: min(420px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto;
+    width: min(680px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow-y: auto;
     background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
     padding: 18px 20px 20px; display: flex; flex-direction: column; gap: 6px;
     box-shadow: 0 20px 60px rgba(0,0,0,0.35);
@@ -297,7 +297,7 @@
   .tag-add-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-lt); }
   .tag-add-btn:disabled { opacity: 0.4; cursor: default; }
 
-  .icon-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+  .icon-grid { display: grid; grid-template-columns: repeat(auto-fill, 42px); gap: 6px; }
   .icon-pick {
     aspect-ratio: 1; border-radius: 9px; border: 1px solid var(--border-2);
     background: transparent; color: var(--text-5); cursor: pointer;

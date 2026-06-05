@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import type { Note, Todo, Settings, SyncResult, View } from './types';
+import type { Note, Todo, Settings, SyncResult, View, Project } from './types';
 
 function localStore<T>(key: string, initial: T) {
   const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
@@ -22,6 +22,11 @@ export const settings = writable<Settings>({
   auto_sync: true,
   sync_interval_seconds: 30,
 });
+
+// User-defined project shortcuts (synced via projects.json). Loaded from the backend.
+export const projects = writable<Project[]>([]);
+// Which project filter is currently applied — device-local, drives nav highlight.
+export const activeProjectId = localStore<string | null>('todoto-active-project', null);
 
 export const activeView = writable<View>('home');
 export const theme = writable<'system' | 'light' | 'dark' | 'midnight' | 'forest'>('system');

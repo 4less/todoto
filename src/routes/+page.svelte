@@ -3,13 +3,16 @@
   import { get } from 'svelte/store';
   import { base } from '$app/paths';
   import { api } from '$lib/api';
-  import { notes, todos, settings, activeView, showSettings, syncState, diskFolders, theme } from '$lib/stores';
+  import { notes, todos, settings, activeView, showSettings, syncState, diskFolders, theme,
+    projects, activeProjectId, taskFilterTag, taskFilterGroupByTags, taskFilterHideUngrouped } from '$lib/stores';
+  import type { Project } from '$lib/types';
   import HomeView from '$lib/components/HomeView.svelte';
   import TasksView from '$lib/components/TasksView.svelte';
   import DocsView from '$lib/components/DocsView.svelte';
   import SearchView from '$lib/components/SearchView.svelte';
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import SyncIndicator from '$lib/components/SyncIndicator.svelte';
+  import ProjectsNav from '$lib/components/ProjectsNav.svelte';
 
   let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
   let loading = $state(true);
@@ -17,7 +20,19 @@
   let drawerOpen = $state(false);
 
   function closeDrawer() { drawerOpen = false; }
-  function navTo(id: typeof $activeView) { activeView.set(id); closeDrawer(); }
+  // Switching to a top-level view clears any applied project filter highlight.
+  function navMain(id: typeof $activeView) { activeProjectId.set(null); activeView.set(id); }
+  function navTo(id: typeof $activeView) { navMain(id); closeDrawer(); }
+
+  // Apply a project shortcut: jump to Tasks, grouped by the project's tags.
+  function applyProject(p: Project) {
+    taskFilterTag.set('');
+    taskFilterGroupByTags.set([...p.tags]);
+    taskFilterHideUngrouped.set(true);
+    activeProjectId.set(p.id);
+    activeView.set('tasks');
+    closeDrawer();
+  }
 
   $effect(() => {
     localStorage.setItem('todoto-sidebar-collapsed', String(sidebarCollapsed));
@@ -43,11 +58,12 @@
 
   // ── Data loading ──────────────────────────────────────────────────────────
   async function loadAll() {
-    const [n, t, s, f] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings(), api.getFolders()]);
+    const [n, t, s, f, p] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings(), api.getFolders(), api.getProjects()]);
     notes.set(n);
     todos.set(t);
     settings.set(s);
     diskFolders.set(f);
+    projects.set(p);
     const lastSync = await api.getLastSync();
     syncState.update((st) => ({ ...st, lastSync }));
     scheduleAutoSync(s.auto_sync, s.sync_interval_seconds);
@@ -78,8 +94,8 @@
     syncState.update((s) => ({ ...s, syncing: true }));
     try {
       const result = await api.syncNow();
-      const [n, t, f] = await Promise.all([api.getNotes(), api.getTodos(), api.getFolders()]);
-      notes.set(n); todos.set(t); diskFolders.set(f);
+      const [n, t, f, p] = await Promise.all([api.getNotes(), api.getTodos(), api.getFolders(), api.getProjects()]);
+      notes.set(n); todos.set(t); diskFolders.set(f); projects.set(p);
       syncState.set({ syncing: false, lastResult: result, lastSync: result.timestamp });
     } catch {
       syncState.update((s) => ({ ...s, syncing: false }));
@@ -152,14 +168,16 @@
     <div class="sidebar-nav">
       {#each navItems as item}
         <button
-          class="nav-item {$activeView === item.id ? 'active' : ''}"
-          onclick={() => activeView.set(item.id)}
+          class="nav-item {$activeView === item.id && !$activeProjectId ? 'active' : ''}"
+          onclick={() => navMain(item.id)}
           title={sidebarCollapsed ? item.label : ''}
         >
           {@html item.svg()}
           {#if !sidebarCollapsed}<span>{item.label}</span>{/if}
         </button>
       {/each}
+
+      <ProjectsNav collapsed={sidebarCollapsed} onApply={applyProject} />
     </div>
 
     <div class="sidebar-footer">
@@ -214,11 +232,13 @@
     </div>
     <div class="drawer-nav">
       {#each navItems as item}
-        <button class="drawer-item {$activeView === item.id ? 'active' : ''}" onclick={() => navTo(item.id)}>
+        <button class="drawer-item {$activeView === item.id && !$activeProjectId ? 'active' : ''}" onclick={() => navTo(item.id)}>
           {@html item.svg()}
           <span>{item.label}</span>
         </button>
       {/each}
+
+      <ProjectsNav collapsed={false} onApply={applyProject} />
     </div>
     <div class="drawer-footer">
       <button class="drawer-item" onclick={() => { showSettings.set(true); closeDrawer(); }}>
@@ -295,7 +315,7 @@
   .collapse-btn:hover { background: var(--border); color: var(--text-2); }
   .sidebar.collapsed .collapse-btn { margin-left: 0; }
 
-  .sidebar-nav { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+  .sidebar-nav { flex: 1; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; min-height: 0; }
 
   .nav-item {
     display: flex; align-items: center; gap: 10px;
@@ -373,7 +393,7 @@
   }
   .drawer-close:hover { background: var(--border); color: var(--text-2); }
 
-  .drawer-nav { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+  .drawer-nav { flex: 1; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; min-height: 0; }
   .drawer-footer { padding-top: 12px; border-top: 1px solid var(--border); }
 
   .drawer-item {

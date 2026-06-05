@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
@@ -92,6 +92,29 @@ impl Ord for Priority {
 pub struct TodoData {
     pub todos: Vec<Todo>,
     pub version: u32,
+}
+
+// User-defined project shortcut (tag-based filter shown in the sidebar).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectsData {
+    #[serde(default)]
+    pub projects: Vec<Project>,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -243,6 +266,41 @@ fn save_todos(settings: &Settings, todos: &[Todo]) -> Result<(), String> {
         v
     }).collect();
     let data = serde_json::json!({ "todos": todo_values, "version": 1 });
+    let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+// ── Projects storage (projects.json, synced like todos.json) ──────────────────
+
+fn projects_path(settings: &Settings) -> Option<PathBuf> {
+    if settings.repo_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&settings.repo_path).join("projects.json"))
+    }
+}
+
+fn load_projects(settings: &Settings) -> Vec<Project> {
+    let Some(path) = projects_path(settings) else { return vec![] };
+    if path.exists() {
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<ProjectsData>(&s).ok())
+            .map(|d| d.projects)
+            .unwrap_or_default()
+    } else {
+        vec![]
+    }
+}
+
+fn save_projects_to_disk(settings: &Settings, projects: &[Project]) -> Result<(), String> {
+    let path = projects_path(settings).ok_or("No repo path configured")?;
+    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let data = ProjectsData {
+        projects: projects.to_vec(),
+        version: 1,
+        updated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+    };
     let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())
 }
@@ -607,7 +665,7 @@ fn is_image_extension(ext: &str) -> bool {
 }
 
 fn is_synced_file(path: &str) -> bool {
-    if path.ends_with(".md") || path == "todos.json" {
+    if path.ends_with(".md") || path == "todos.json" || path == "projects.json" {
         return true;
     }
     if let Some(ext) = path.rsplit('.').next() {
@@ -820,7 +878,7 @@ fn scan_local_dir(dir: &Path, base: &Path, out: &mut HashMap<String, String>) {
         }
         if path.is_dir() {
             scan_local_dir(&path, base, out);
-        } else if path.extension().map_or(false, |e| e == "md") || name == "todos.json" {
+        } else if path.extension().map_or(false, |e| e == "md") || name == "todos.json" || name == "projects.json" {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(rel) = path.strip_prefix(base) {
                     let rel_str = rel.to_string_lossy().replace('\\', "/");
@@ -884,6 +942,30 @@ async fn merge_todos(
     let json = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
     let new_sha = gh_put_file(client, owner, repo, path, &json, Some(gh_sha)).await?;
     Ok((json, new_sha))
+}
+
+// Resolves a projects.json conflict by whole-file last-write-wins on updated_at.
+// Returns (content_to_store_locally, blob_sha). Uploads local only when it wins.
+async fn merge_projects(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    path: &str,
+    gh_sha: &str,
+    local_content: &str,
+) -> Result<(String, String), String> {
+    let (remote_content, remote_sha) = gh_get_file(client, owner, repo, path).await?;
+    let local: ProjectsData = serde_json::from_str(local_content).unwrap_or_default();
+    let remote: ProjectsData = serde_json::from_str(&remote_content).unwrap_or_default();
+
+    if remote.updated_at > local.updated_at {
+        // Remote is newer — keep it locally, no upload needed.
+        Ok((remote_content, remote_sha))
+    } else {
+        // Local is newer (or equal) — upload local.
+        let new_sha = gh_put_file(client, owner, repo, path, local_content, Some(gh_sha)).await?;
+        Ok((local_content.to_string(), new_sha))
+    }
 }
 
 async fn do_sync(settings: &Settings) -> SyncResult {
@@ -981,6 +1063,16 @@ async fn do_sync(settings: &Settings) -> SyncResult {
                 } else if github_changed && local_changed && path == "todos.json" {
                     // Both sides changed on todos.json → merge by ID.
                     match merge_todos(&client, &owner, &repo, path, gh_sha, content).await {
+                        Ok((merged, new_sha)) => {
+                            let _ = fs::write(repo_path.join(path), &merged);
+                            new_manifest.insert(path.clone(), new_sha);
+                            uploaded += 1;
+                        }
+                        Err(e) => errors.push(e),
+                    }
+                } else if github_changed && local_changed && path == "projects.json" {
+                    // Both sides changed on projects.json → whole-file newest-wins.
+                    match merge_projects(&client, &owner, &repo, path, gh_sha, content).await {
                         Ok((merged, new_sha)) => {
                             let _ = fs::write(repo_path.join(path), &merged);
                             new_manifest.insert(path.clone(), new_sha);
@@ -1278,6 +1370,18 @@ fn delete_todo(state: State<Mutex<AppState>>, id: String) -> Result<(), String> 
 }
 
 #[tauri::command]
+fn get_projects(state: State<Mutex<AppState>>) -> Vec<Project> {
+    let state = state.lock().unwrap();
+    load_projects(&state.settings)
+}
+
+#[tauri::command]
+fn save_projects(state: State<Mutex<AppState>>, projects: Vec<Project>) -> Result<(), String> {
+    let state = state.lock().unwrap();
+    save_projects_to_disk(&state.settings, &projects)
+}
+
+#[tauri::command]
 fn get_settings(state: State<Mutex<AppState>>) -> Settings {
     state.lock().unwrap().settings.clone()
 }
@@ -1529,6 +1633,8 @@ pub fn run() {
             delete_todo,
             get_settings,
             save_settings,
+            get_projects,
+            save_projects,
             sync_now,
             get_last_sync,
             read_clipboard_image,

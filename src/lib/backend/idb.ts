@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import type { Note, Todo, Settings, SyncResult, CommitInfo } from '../types';
+import type { Note, Todo, Settings, SyncResult, CommitInfo, Project } from '../types';
 import type { ApiBackend } from './interface';
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────────
@@ -93,6 +93,31 @@ function loadSettings(): Settings {
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
+}
+
+// ── Projects (synced via projects.json, whole-file last-write-wins) ───────────
+
+const PROJECTS_KEY = 'todoto-idb-projects';
+
+interface ProjectsFile { projects: Project[]; version: number; updated_at: string; }
+
+function loadProjectsFile(): ProjectsFile {
+  try {
+    const s = localStorage.getItem(PROJECTS_KEY);
+    if (s) {
+      const parsed = JSON.parse(s);
+      return { projects: parsed.projects ?? [], version: 1, updated_at: parsed.updated_at ?? '' };
+    }
+  } catch {}
+  return { projects: [], version: 1, updated_at: '' };
+}
+
+function writeProjectsFile(file: ProjectsFile): void {
+  localStorage.setItem(PROJECTS_KEY, JSON.stringify(file));
+}
+
+function serializeProjectsFile(file: ProjectsFile): string {
+  return JSON.stringify({ projects: file.projects, version: 1, updated_at: file.updated_at }, null, 2);
 }
 
 // ── GitHub API helpers ────────────────────────────────────────────────────────
@@ -203,7 +228,7 @@ async function ghListTree(
   const data = await res.json();
   const map = new Map<string, string>();
   for (const item of data.tree) {
-    if (item.type === 'blob' && (item.path.endsWith('.md') || item.path === 'todos.json')) {
+    if (item.type === 'blob' && (item.path.endsWith('.md') || item.path === 'todos.json' || item.path === 'projects.json')) {
       map.set(item.path, item.sha);
     }
   }
@@ -315,6 +340,7 @@ async function syncToGitHub(settings: Settings, db: IDBDatabase): Promise<void> 
   };
 
   await addIfChanged('todos.json', serializeTodos(todos));
+  await addIfChanged('projects.json', serializeProjectsFile(loadProjectsFile()));
 
   for (const todo of todos) {
     if (todo.notes != null && todo.notes.trim() !== '') {
@@ -389,6 +415,22 @@ async function pullFromGitHub(settings: Settings, db: IDBDatabase): Promise<bool
     dbPutMany(db, 'notes', mergeByUpdated(localNotes, remoteNotes)),
     dbPutMany(db, 'todos', mergeByUpdated(localTodos, remoteTodos)),
   ]);
+
+  // Projects: whole-file last-write-wins. If the remote file is newer, adopt it
+  // locally so the subsequent push sees identical content and skips it.
+  if (tree.has('projects.json')) {
+    const raw = await ghGet(owner, repo, token, 'projects.json');
+    if (raw) {
+      try {
+        const remote = JSON.parse(raw.content) as ProjectsFile;
+        const local = loadProjectsFile();
+        if ((remote.updated_at ?? '') > (local.updated_at ?? '')) {
+          writeProjectsFile({ projects: remote.projects ?? [], version: 1, updated_at: remote.updated_at ?? '' });
+        }
+      } catch {}
+    }
+  }
+
   return true;
 }
 
@@ -498,6 +540,12 @@ export const idbBackend: ApiBackend = {
 
   saveSettings: async (settings) => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  },
+
+  getProjects: async () => loadProjectsFile().projects,
+
+  saveProjects: async (projects) => {
+    writeProjectsFile({ projects, version: 1, updated_at: new Date().toISOString() });
   },
 
   syncNow: async (): Promise<SyncResult> => {

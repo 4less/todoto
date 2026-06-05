@@ -28,6 +28,7 @@
   // ── Selection state ───────────────────────────────────────────────────────
   let selectedIds: Set<string> = $state(new Set());
   let confirmDelete = $state(false);
+  let activeId: string | null = $state(null);
 
   // ── Timer state ───────────────────────────────────────────────────────────
   let expandedSessions: string | null = $state(null);
@@ -260,15 +261,12 @@
     todos.update((ts) => ts.filter((t) => t.id !== id));
   }
 
-  function toggleSelect(id: string, multi: boolean) {
-    if (multi) {
-      const next = new Set(selectedIds);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      selectedIds = next;
-    } else {
-      selectedIds = selectedIds.has(id) && selectedIds.size === 1 ? new Set() : new Set([id]);
-    }
+  function toggleSelect(id: string) {
+    const next = new Set(selectedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    selectedIds = next;
+    activeId = null;
     confirmDelete = false;
   }
 
@@ -378,7 +376,8 @@
       e.preventDefault();
       showForm = true;
     }
-    if (e.key === 'Escape' && selectedIds.size > 0) {
+    if (e.key === 'Escape') {
+      activeId = null;
       selectedIds = new Set();
       confirmDelete = false;
     }
@@ -515,9 +514,12 @@
         {@const ownMs = totalSessionMs(sessions)}
         {@const totalMs = isChild ? ownMs : ownMs + childrenMs(todo.id)}
         {@const isSelected = selectedIds.has(todo.id)}
+        {@const isActive = activeId === todo.id}
         {@const hasChildren = !isChild && $todos.some((t) => t.parent_id === todo.id)}
 
-        <div class="task-card {isChild ? 'child-card' : ''} {todo.done ? 'done' : ''} {isTimerActive ? 'timer-active' : ''} {isSelected ? 'selected' : ''} {notesOpenId === todo.id && !hasChildren ? 'notes-open' : ''}">
+        {@const hasNotes = notesOpenId === todo.id}
+        <div class="task-wrap {isChild ? 'child-wrap' : ''} {todo.done ? 'done' : ''} {isTimerActive ? 'wrap-timer' : ''} {isSelected ? 'wrap-selected' : ''} {isActive ? 'wrap-active' : ''} {hasNotes ? 'with-notes' : ''}">
+        <div class="task-card">
           {#if editId === todo.id}
             <div class="edit-form">
               <input class="input" bind:value={editTitle} onkeydown={(e) => e.key === 'Enter' && saveEdit(todo)} />
@@ -544,16 +546,30 @@
               {/if}
             </button>
 
-            <div class="task-body" onclick={(e) => toggleSelect(todo.id, e.ctrlKey || e.metaKey)} ondblclick={() => { selectedIds = new Set([todo.id]); openNotes(todo); }}>
+            <div class="task-body"
+              onclick={(e) => {
+                if (e.detail > 1) return;
+                if (e.ctrlKey || e.metaKey) {
+                  toggleSelect(todo.id);
+                } else {
+                  if (activeId === todo.id) {
+                    activeId = null;
+                  } else {
+                    activeId = todo.id;
+                    if (hasChildren) { const s = new Set(expandedChildren); s.add(todo.id); expandedChildren = s; }
+                  }
+                }
+              }}
+              ondblclick={() => openNotes(todo)}>
               <div class="task-title-row">
                 <span class="priority-bar" style="background:{priorityColor(todo.priority)}" title="{todo.priority} priority"></span>
                 <span class="task-title">{todo.title}</span>
-                {#if todo.notes && !isSelected}
+                {#if todo.notes && !isActive && !isSelected}
                   <span class="notes-indicator" title="Has notes">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
                   </span>
                 {/if}
-                {#if isTimerActive && timerStartMs !== undefined && !isSelected}
+                {#if isTimerActive && timerStartMs !== undefined && !isActive && !isSelected}
                   <span class="timer-running">{formatElapsed(timerStartMs)}</span>
                 {/if}
               </div>
@@ -582,7 +598,7 @@
                 {/each}
               </div>
             </div>
-            {#if isSelected}
+            {#if isActive || isSelected}
               {#if isTimerActive && timerStartMs !== undefined}
                 <span class="timer-running">{formatElapsed(timerStartMs)}</span>
               {/if}
@@ -634,7 +650,7 @@
         </div>
 
         {#if expandedSessions === todo.id && sessions.length > 0}
-          <div class="sessions-panel">
+          <div class="sessions-panel" style="border-top: 1px solid var(--border); border-radius: 0;">
             <div class="sessions-title">Work sessions</div>
             {#each sessions as s, i}
               {@const isEditingThis = editingSession?.todoId === todo.id && editingSession.index === i}
@@ -711,7 +727,7 @@
           {/if}
         {/if}
 
-        {#if notesOpenId === todo.id}
+        {#if hasNotes}
           <NotesEditor
             {todo}
             repoPath={$settings.repo_path}
@@ -721,6 +737,7 @@
             onTodoUpdated={(updated) => todos.update((ts) => ts.map((t) => t.id === updated.id ? updated : t))}
           />
         {/if}
+        </div><!-- end task-wrap -->
   {/snippet}
 
   {#if !focusMode}
@@ -734,7 +751,13 @@
       {@render taskCard(focusTodo, !!focusTodo.parent_id)}
     </div>
   {:else}
-  <div class="task-list">
+  <div class="task-list" onclick={(e) => {
+    if (!(e.target as HTMLElement).closest('.task-card, .sessions-panel, .children-zone, .child-task-wrap, .child-add-form, .add-child-bottom-btn, .group-divider, .section-divider')) {
+      activeId = null;
+      notesOpenId = null;
+      expandedChildren = new Set();
+    }
+  }}>
     {#if filtered.length === 0}
       <div class="empty">No tasks match the current filters.</div>
     {:else if $taskFilterGroupByTags.length > 0}
@@ -899,7 +922,7 @@
   .annotation-hint { font-size: 0.75rem; color: var(--text-7); padding: 6px 2px; }
   .annotation-hint code { background: var(--border); border-radius: 4px; padding: 1px 5px; color: var(--accent-purple); }
 
-  .task-list { display: flex; flex-direction: column; gap: 4px; }
+  .task-list { display: flex; flex-direction: column; gap: 8px; }
   .empty { color: var(--text-7); font-size: 0.875rem; padding: 20px 0; text-align: center; }
 
   .section-divider {
@@ -926,73 +949,82 @@
   .group-tag-chip.active { background: color-mix(in srgb, var(--accent-purple) 15%, transparent); border-color: var(--accent-purple); color: var(--accent-purple); }
   .group-clear-chip { color: var(--text-5); border-color: var(--border-2); }
 
+  /* ── Task wrap (unified border container) ── */
+  .task-wrap {
+    border: 1px solid var(--border); border-radius: 14px;
+    background: var(--surface); overflow: hidden;
+    transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  }
+  .task-wrap:hover { border-color: var(--border-2); }
+  .task-wrap.done { opacity: 0.55; }
+  .task-wrap.wrap-timer { border-color: var(--accent); }
+  .task-wrap.wrap-active { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+  .task-wrap.wrap-selected { border-color: var(--accent); background: var(--accent-bg); }
+  .task-wrap.child-wrap { border-radius: 10px; }
+
   .task-card > .task-action-btn { align-self: center; }
   .card-play-btn {
-    width: 36px; height: 36px; border-radius: 50%; border: none; flex-shrink: 0;
+    width: 40px; height: 40px; border-radius: 50%; border: none; flex-shrink: 0;
     background: var(--green); color: #fff; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
     align-self: center;
     transition: background 0.12s, transform 0.1s;
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--green) 35%, transparent);
   }
-  .card-play-btn:hover { background: #16a34a; }
+  .card-play-btn:hover { background: #16a34a; transform: scale(1.05); }
   .card-play-btn:active { transform: scale(0.93); }
-  .card-play-btn.stop { background: var(--red-border); color: var(--red); }
-  .card-play-btn.stop:hover { background: var(--red-border-2); }
+  .card-play-btn.stop { background: transparent; color: var(--red); border: 2px solid var(--red); box-shadow: none; }
+  .card-play-btn.stop:hover { background: var(--red-bg); }
 
   .task-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-    padding: 10px 14px; display: flex; align-items: center; gap: 12px;
-    transition: border-color 0.12s, background 0.12s;
+    background: transparent; border: none; border-radius: 0;
+    padding: 14px 18px; display: flex; align-items: center; gap: 12px;
   }
-  .task-card:hover { border-color: var(--border-2); }
-  .task-card.done { opacity: 0.55; }
-  .task-card.timer-active { border-color: var(--accent); background: var(--surface); }
-  .task-card.selected { border-color: var(--accent); background: var(--accent-bg); }
+  .task-card.done { opacity: 1; } /* opacity handled by task-wrap */
 
   .check-btn { background: none; border: none; cursor: pointer; padding: 0; flex-shrink: 0; display: flex; }
 
-  .task-body { flex: 1; min-width: 0; cursor: pointer; align-self: stretch; display: flex; flex-direction: column; justify-content: center; }
-  .task-title-row { display: flex; align-items: flex-start; gap: 8px; }
-  .priority-bar { width: 3px; height: 16px; border-radius: 2px; flex-shrink: 0; }
-  .task-title { font-size: 0.9rem; color: var(--text-2); flex: 1; min-width: 0; word-break: break-word; }
-  .task-card.done .task-title { text-decoration: line-through; color: var(--text-6); }
+  .task-body { flex: 1; min-width: 0; cursor: pointer; align-self: stretch; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+  .task-title-row { display: flex; align-items: center; gap: 8px; }
+  .priority-bar { width: 3px; height: 18px; border-radius: 2px; flex-shrink: 0; }
+  .task-title { font-size: 0.95rem; font-weight: 400; color: var(--text-1); flex: 1; min-width: 0; word-break: break-word; }
+  .task-wrap.done .task-title { text-decoration: line-through; color: var(--text-6); }
 
   .timer-running {
-    font-size: 0.92rem; color: var(--accent-lt); font-variant-numeric: tabular-nums;
-    background: var(--accent-bg); padding: 2px 8px; border-radius: 4px;
-    font-family: monospace; letter-spacing: 0.03em;
+    font-size: 0.85rem; color: var(--accent-lt); font-variant-numeric: tabular-nums;
+    background: var(--accent-bg); padding: 2px 8px; border-radius: 20px;
+    font-family: monospace; letter-spacing: 0.03em; white-space: nowrap;
   }
 
-  .task-meta { display: flex; gap: 5px; align-items: center; margin-top: 5px; flex-wrap: wrap; }
+  .task-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
   .due-chip {
-    font-size: 0.7rem; color: var(--yellow); background: var(--yellow-bg);
-    padding: 2px 7px; border-radius: 4px;
+    font-size: 0.72rem; font-weight: 600; color: var(--yellow); background: var(--yellow-bg);
+    padding: 2px 8px; border-radius: 20px;
   }
   .due-chip.overdue { color: var(--red); background: var(--red-bg); }
 
   .time-chip {
-    font-size: 0.68rem; padding: 2px 6px; border-radius: 4px;
+    font-size: 0.75rem; padding: 0; background: transparent; border-radius: 0;
   }
-  .time-chip.started { color: var(--text-3); background: var(--border); }
-  .time-chip.finished { color: var(--green); background: var(--green-bg); }
+  .time-chip.started { color: var(--text-4); }
+  .time-chip.finished { color: var(--green); }
   .time-chip.logged {
-    color: var(--accent-purple); background: var(--accent-bg); border: none; cursor: pointer;
-    transition: background 0.12s;
+    color: var(--text-4); background: transparent; border: none; cursor: pointer; padding: 0;
+    transition: color 0.12s;
   }
-  .time-chip.logged:hover, .time-chip.logged.active { background: var(--accent-bg-2); }
+  .time-chip.logged:hover, .time-chip.logged.active { color: var(--accent-purple); }
 
   .tag-chip {
-    font-size: 0.7rem; color: var(--accent-lt); background: transparent;
+    font-size: 0.78rem; font-weight: 500; color: var(--accent-lt); background: transparent;
     border: none; padding: 0; cursor: pointer;
   }
   .tag-chip:hover { color: var(--accent-purple); text-decoration: underline; }
 
   /* Work sessions panel */
   .sessions-panel {
-    background: var(--bg); border: 1px solid var(--border); border-top: none;
-    border-radius: 0 0 10px 10px; padding: 10px 14px 12px;
-    margin-top: -4px; display: flex; flex-direction: column; gap: 5px;
+    background: var(--surface-alt); padding: 10px 18px 12px;
+    display: flex; flex-direction: column; gap: 5px;
   }
   .sessions-title { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-7); margin-bottom: 4px; }
   .session-row { display: flex; align-items: center; gap: 10px; font-size: 0.75rem; min-height: 24px; }
@@ -1159,34 +1191,36 @@
     min-width: 0;
   }
 
-  /* + icon button on the card (shown on hover/select) */
+  /* action group pill */
   .task-actions {
-    display: flex; align-items: center; gap: 2px;
+    display: flex; align-items: center; gap: 1px;
     flex-shrink: 0; align-self: center;
-    background: var(--surface-alt); border: 1px solid var(--border-2);
-    border-radius: 8px; padding: 3px;
+    background: var(--surface); border: 1px solid var(--border-2);
+    border-radius: 10px; padding: 3px 4px;
   }
   .task-action-btn {
-    width: 26px; height: 26px; border-radius: 5px;
+    width: 26px; height: 26px; border-radius: 6px;
     border: none; background: transparent;
-    color: var(--text-5); cursor: pointer;
+    color: var(--text-6); cursor: pointer;
     display: flex; align-items: center; justify-content: center;
     transition: background 0.1s, color 0.1s;
   }
-  .task-action-btn:hover { background: var(--border); color: var(--text-2); }
+  .task-action-btn:hover { background: var(--surface-alt); color: var(--text-2); }
   .task-action-btn.active { background: var(--accent-bg); color: var(--accent-lt); }
-  .task-action-round {
-    width: 32px; height: 32px; border-radius: 50%; border: none; flex-shrink: 0;
-    background: var(--accent); color: #fff; cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
-    transition: background 0.12s, transform 0.1s;
+  .task-action-btn.delete-action:hover { color: #f87171; background: rgba(248,113,113,0.10); }
+  .task-actions-divider { width: 1px; height: 14px; background: var(--border-2); margin: 0 3px; flex-shrink: 0; }
+
+  /* seamlessly connect notes panel inside task-wrap */
+  :global(.task-wrap .notes-panel) {
+    border: none !important;
+    border-top: 1px solid var(--border) !important;
+    border-radius: 0 !important;
+    margin-top: 0 !important;
   }
-  .task-action-round:hover { background: var(--accent-dk); }
-  .task-action-round:active { transform: scale(0.93); }
-  .task-action-round.stop { background: var(--red-border); color: var(--red); }
-  .task-action-round.stop:hover { background: var(--red-border-2); }
-  .task-actions-divider { width: 1px; height: 16px; background: var(--border-2); margin: 0 2px; flex-shrink: 0; }
-  .task-action-btn.delete-action:hover { color: #f87171; background: rgba(248,113,113,0.12); }
+  :global(.task-wrap .notes-panel-detached) {
+    border-top: 1px solid var(--border) !important;
+  }
+
   .children-zone.collapsed > :not(.child-add-form) { display: none; }
 
 

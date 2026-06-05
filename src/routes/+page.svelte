@@ -389,8 +389,9 @@
   @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 
   @media (max-width: 600px) {
+    .app { flex-direction: column; }
     .sidebar { display: none; }
-    .mobile-header { display: flex; }
+    .mobile-header { display: flex; order: -1; }
     .drawer-backdrop { display: block; }
     .drawer { display: flex; }
     .main { padding-top: 0; }

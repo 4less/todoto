@@ -9,8 +9,24 @@
 
   const GAP  = 4;
   const DAY_LBL_W = 28;
+  const MAX_WEEKS = 53;       // one trailing year
+  const MIN_CELL = 10;        // never shrink cells below this…
+  const MAX_CELL = 16;        // …nor grow them beyond this
   let calContainerWidth = $state(0);
-  const CELL = $derived(Math.max(8, Math.floor((calContainerWidth - DAY_LBL_W - 52 * GAP) / 53)));
+
+  // Width available for the week columns (excludes the day-label gutter).
+  const innerW = $derived(Math.max(0, calContainerWidth - DAY_LBL_W));
+  // How many recent weeks fit at the minimum cell size — capped at a year.
+  // Before the container is measured, assume the full year (clipped if needed).
+  const weeksToShow = $derived(
+    calContainerWidth > 0
+      ? Math.max(1, Math.min(MAX_WEEKS, Math.floor((innerW + GAP) / (MIN_CELL + GAP))))
+      : MAX_WEEKS
+  );
+  // Size cells to fill the available width for the weeks we're showing.
+  const CELL = $derived(
+    Math.min(MAX_CELL, Math.max(MIN_CELL, Math.floor((innerW - (weeksToShow - 1) * GAP) / weeksToShow)))
+  );
   const COL  = $derived(CELL + GAP);
 
   function localDateStr(d: Date): string {
@@ -60,22 +76,40 @@
     }
   }
 
-  // 53-week grid — all dates computed as direct offsets from today to avoid
-  // any DST / timezone / while-loop-termination issues.
+  // Full trailing-year total — kept independent of how many weeks are drawn so
+  // the "past year" headline stays accurate even when the grid is narrowed.
+  const yearTotal = $derived.by(() => {
+    const now = new Date();
+    const todayStr = localDateStr(now);
+    const todayDow = (now.getDay() + 6) % 7;
+    const startOffset = -(todayDow + (MAX_WEEKS - 1) * 7);
+    let total = 0;
+    for (let i = 0; i < MAX_WEEKS * 7; i++) {
+      const date = new Date(now);
+      date.setDate(now.getDate() + startOffset + i);
+      const key = localDateStr(date);
+      if (key > todayStr) continue;
+      total += calMap.get(key) ?? 0;
+    }
+    return total;
+  });
+
+  // Heatmap grid — renders only the most recent `weeksToShow` weeks so it fits
+  // the window. Dates are direct offsets from today to avoid DST/timezone issues.
   const calGrid = $derived.by(() => {
+    const wks = weeksToShow;
     const now = new Date();
     const todayStr = localDateStr(now);
     const todayDow = (now.getDay() + 6) % 7; // Mon=0 … Sun=6
-    // Column 0 starts at the Monday that is 52 full weeks before this Monday.
-    const startOffset = -(todayDow + 52 * 7); // day offset relative to today
+    // Column 0 starts at the Monday of the oldest week we're showing.
+    const startOffset = -(todayDow + (wks - 1) * 7);
 
     type Cell = { date: string | null; value: number; lvl: 0|1|2|3|4 };
     const weeks: Cell[][] = [];
     const months: { idx: number; text: string }[] = [];
     let lastMonth = -1;
-    let total = 0;
 
-    for (let w = 0; w < 53; w++) {
+    for (let w = 0; w < wks; w++) {
       const week: Cell[] = [];
       for (let d = 0; d < 7; d++) {
         const date = new Date(now);
@@ -85,7 +119,6 @@
           week.push({ date: null, value: 0, lvl: 0 });
         } else {
           const val = calMap.get(key) ?? 0;
-          total += val;
           week.push({ date: key, value: val, lvl: toLevel(val) });
         }
       }
@@ -102,7 +135,7 @@
       weeks.push(week);
     }
 
-    return { weeks, months, total, todayStr };
+    return { weeks, months, todayStr };
   });
 
   function fmtSummary(total: number): string {
@@ -223,7 +256,7 @@
   <!-- Activity calendar -->
   <div class="cal-card">
     <div class="cal-top">
-      <span class="cal-summary">{fmtSummary(calGrid.total)}</span>
+      <span class="cal-summary">{fmtSummary(yearTotal)}</span>
       <div class="cal-mode">
         <button class="mode-btn {calMode === 'minutes' ? 'active' : ''}" onclick={() => calMode = 'minutes'}>Minutes</button>
         <button class="mode-btn {calMode === 'tasks' ? 'active' : ''}" onclick={() => calMode = 'tasks'}>Tasks</button>
@@ -234,7 +267,7 @@
       <!-- Month labels -->
       <div class="cal-months-row">
         <div class="day-lbl-spacer"></div>
-        <div class="cal-months-inner" style="width: {53 * COL}px">
+        <div class="cal-months-inner" style="width: {weeksToShow * COL}px">
           {#each calGrid.months as ml}
             <span class="cal-month-lbl" style="left: {ml.idx * COL}px">{ml.text}</span>
           {/each}
@@ -465,7 +498,9 @@
   .mode-btn.active { background: var(--accent-bg); color: var(--accent-ltr); }
   .mode-btn:hover:not(.active) { background: var(--surface-alt); color: var(--text-3); }
 
-  .cal-scroll { padding-bottom: 2px; width: 100%; }
+  /* overflow:hidden is a safety net — the grid is sized to fit, but this also
+     swallows the up-to-1-gap rounding slack and the pre-measurement first frame. */
+  .cal-scroll { padding-bottom: 2px; width: 100%; overflow: hidden; }
 
   /* Month label row */
   .cal-months-row {

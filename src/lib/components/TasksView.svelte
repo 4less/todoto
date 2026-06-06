@@ -216,13 +216,19 @@
 
   // ── Actions ───────────────────────────────────────────────────────────────
   async function toggleDone(todo: Todo) {
-    const now = new Date().toISOString();
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
     const markingDone = !todo.done;
 
     if ($activeTimers.has(todo.id)) {
       const startMs = $activeTimers.get(todo.id)!;
       activeTimers.update((m) => { m.delete(todo.id); return m; });
       const session: WorkSession = { start: new Date(startMs).toISOString(), end: now };
+      todo = { ...todo, work_sessions: [...(todo.work_sessions ?? []), session] };
+    } else if (markingDone) {
+      // Completing a task with no running timer still logs effort: a 1-minute
+      // session ending at the moment it's marked done.
+      const session: WorkSession = { start: new Date(nowMs - 60_000).toISOString(), end: now };
       todo = { ...todo, work_sessions: [...(todo.work_sessions ?? []), session] };
     }
 

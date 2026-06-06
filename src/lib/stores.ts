@@ -41,6 +41,11 @@ export const activeProjectTags = derived(activeProject, ($p) => $p?.tags ?? []);
 // Tasks view consumes and clears it. Lets the sidebar jump back to the running task.
 export const focusRequest = writable<string | null>(null);
 
+// Bumped every time a project is applied from the sidebar. The Tasks view watches
+// it to leave focus mode and show the full list — even when the same project that
+// is already active is re-clicked (which wouldn't change activeProjectId).
+export const projectApplyTick = writable(0);
+
 export const activeView = writable<View>('home');
 export const theme = writable<'system' | 'light' | 'dark' | 'midnight' | 'forest'>('system');
 export const activeTimers = writable<Map<string, number>>(new Map());

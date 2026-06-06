@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, settings, activeProject, activeProjectTags, focusRequest } from '$lib/stores';
+  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, settings, activeProject, activeProjectTags, focusRequest, projectApplyTick } from '$lib/stores';
   import { api } from '$lib/api';
   import type { Todo, WorkSession } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
@@ -101,6 +101,18 @@
       focusTodoId = null;
     }
     lastProjectId = pid;
+  });
+
+  // Clicking a project in the sidebar always shows its full task list — leave
+  // focus mode even when the already-active project is re-clicked (no id change).
+  let lastApplyTick: number | undefined = undefined;
+  $effect(() => {
+    const tick = $projectApplyTick;
+    if (lastApplyTick !== undefined && tick !== lastApplyTick) {
+      focusMode = false;
+      focusTodoId = null;
+    }
+    lastApplyTick = tick;
   });
 
   // ── Notes state ───────────────────────────────────────────────────────────

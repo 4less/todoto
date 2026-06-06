@@ -5,7 +5,7 @@
   import { api } from '$lib/api';
   import { notes, todos, settings, activeView, showSettings, syncState, diskFolders, theme,
     projects, activeProjectId, taskFilterTag, taskFilterGroupByTags, taskFilterHideUngrouped,
-    activeTimers, focusRequest } from '$lib/stores';
+    activeTimers, focusRequest, projectApplyTick } from '$lib/stores';
   import type { Project } from '$lib/types';
   import HomeView from '$lib/components/HomeView.svelte';
   import TasksView from '$lib/components/TasksView.svelte';
@@ -45,6 +45,7 @@
     taskFilterHideUngrouped.set(false);
     activeProjectId.set(p.id);
     activeView.set('tasks');
+    projectApplyTick.update((n) => n + 1);
     closeDrawer();
   }
 

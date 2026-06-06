@@ -19,7 +19,7 @@ export interface Todo {
   id: string;
   title: string;
   done: boolean;
-  priority: 'low' | 'medium' | 'high';
+  priority: 'none' | 'low' | 'medium' | 'high';
   due_date: string | null;
   created_at: string;
   updated_at: string;

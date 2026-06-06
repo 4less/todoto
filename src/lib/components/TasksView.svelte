@@ -14,14 +14,14 @@
   // ── New-task form ─────────────────────────────────────────────────────────
   let showForm = $state(false);
   let newTitle = $state('');
-  let newPriority: 'high' | 'medium' | 'low' = $state('medium');
+  let newPriority: 'none' | 'high' | 'medium' | 'low' = $state('none');
   let newDue = $state('');
   let newTagInput = $state('');
 
   // ── Edit state ────────────────────────────────────────────────────────────
   let editId: string | null = $state(null);
   let editTitle = $state('');
-  let editPriority: 'high' | 'medium' | 'low' = $state('medium');
+  let editPriority: 'none' | 'high' | 'medium' | 'low' = $state('none');
   let editDue = $state('');
   let editTagInput = $state('');
 
@@ -143,7 +143,7 @@
       : []
   );
 
-  const priorityRank: Record<string, number> = { high: 0, medium: 1, low: 2 };
+  const priorityRank: Record<string, number> = { high: 0, medium: 1, low: 2, none: 3 };
 
   let sortedGroups = $derived(
     $taskFilterGroupByTags
@@ -219,7 +219,7 @@
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     });
     todos.update((ts) => [created, ...ts]);
-    newTitle = ''; newPriority = 'medium'; newDue = ''; newTagInput = '';
+    newTitle = ''; newPriority = 'none'; newDue = ''; newTagInput = '';
     showForm = false;
   }
 
@@ -232,6 +232,8 @@
       parent_id: parent.id,
     });
     todos.update((ts) => [...ts, created]);
+    // Make sure the parent's subtask zone is expanded so the new child shows.
+    expandedChildren = new Set(expandedChildren).add(parent.id);
     newChildTitle = '';
     addingChildFor = null;
   }
@@ -288,7 +290,7 @@
 
   // ── Formatting helpers ────────────────────────────────────────────────────
   function priorityColor(p: string) {
-    return p === 'high' ? 'var(--red)' : p === 'medium' ? 'var(--yellow)' : 'var(--text-5)';
+    return p === 'high' ? 'var(--red)' : p === 'medium' ? 'var(--yellow)' : p === 'low' ? 'var(--text-5)' : 'transparent';
   }
 
   function isOverdue(due: string | null): boolean {
@@ -359,6 +361,18 @@
     navigator.clipboard?.writeText(serializeAnnotations(todo));
   }
 
+  // ── Active-filter chips ─────────────────────────────────────────────────────
+  const DUE_LABELS: Record<string, string> = { overdue: 'Overdue', today: 'Today', week: 'This week', month: 'This month' };
+  let hasActiveFilters = $derived(
+    !!$taskFilterSearch || $taskFilterStatus !== 'all' || $taskFilterPriority !== '' ||
+    $taskFilterTag !== '' || $taskFilterDuePeriod !== '' || $taskFilterGroupByTags.length > 0
+  );
+  function clearAllFilters() {
+    $taskFilterSearch = ''; $taskFilterStatus = 'all'; $taskFilterPriority = '';
+    $taskFilterTag = ''; $taskFilterDuePeriod = ''; $taskFilterGroupByTags = [];
+    $taskFilterHideUngrouped = false;
+  }
+
   function focusSearchSoon() { setTimeout(() => searchInputEl?.focus(), 0); }
 
   function toggleFilters() {
@@ -418,6 +432,34 @@
     </div>
   </header>
 
+  <!-- Active filters — each chip removes that filter on click -->
+  {#if hasActiveFilters}
+    <div class="active-filters">
+      {#if $taskFilterSearch}
+        <button class="afilter" onclick={() => ($taskFilterSearch = '')} title="Clear search">“{$taskFilterSearch}”<span class="afilter-x">✕</span></button>
+      {/if}
+      {#if $taskFilterStatus !== 'all'}
+        <button class="afilter" onclick={() => ($taskFilterStatus = 'all')}>Status: {$taskFilterStatus}<span class="afilter-x">✕</span></button>
+      {/if}
+      {#if $taskFilterPriority !== ''}
+        <button class="afilter" onclick={() => ($taskFilterPriority = '')}>Priority: {$taskFilterPriority}<span class="afilter-x">✕</span></button>
+      {/if}
+      {#if $taskFilterTag !== ''}
+        <button class="afilter" onclick={() => ($taskFilterTag = '')}>#{$taskFilterTag}<span class="afilter-x">✕</span></button>
+      {/if}
+      {#if $taskFilterDuePeriod !== ''}
+        <button class="afilter" onclick={() => ($taskFilterDuePeriod = '')}>Due: {DUE_LABELS[$taskFilterDuePeriod] ?? $taskFilterDuePeriod}<span class="afilter-x">✕</span></button>
+      {/if}
+      {#each $taskFilterGroupByTags as gt}
+        <button class="afilter afilter-group" onclick={() => ($taskFilterGroupByTags = $taskFilterGroupByTags.filter((t) => t !== gt))}>Group: #{gt}<span class="afilter-x">✕</span></button>
+      {/each}
+      {#if $taskFilterGroupByTags.length > 0 && $taskFilterHideUngrouped}
+        <button class="afilter" onclick={() => ($taskFilterHideUngrouped = false)}>Other hidden<span class="afilter-x">✕</span></button>
+      {/if}
+      <button class="afilter afilter-clear" onclick={clearAllFilters}>Clear all</button>
+    </div>
+  {/if}
+
   <!-- New task form -->
   {#if showForm}
     <div class="new-task-form">
@@ -428,6 +470,7 @@
       />
       <div class="form-row">
         <select class="select" bind:value={newPriority}>
+          <option value="none">No priority</option>
           <option value="high">High priority</option>
           <option value="medium">Medium priority</option>
           <option value="low">Low priority</option>
@@ -455,8 +498,8 @@
       <div class="filter-chips">
         <span class="filter-label">Priority:</span>
         <button class="chip {$taskFilterPriority === '' ? 'active' : ''}" onclick={() => ($taskFilterPriority = '')}>all</button>
-        {#each ['high', 'medium', 'low'] as p}
-          <button class="chip prio-chip {$taskFilterPriority === p ? 'active' : ''}" style="--pc: {priorityColor(p)}"
+        {#each ['high', 'medium', 'low', 'none'] as p}
+          <button class="chip prio-chip {$taskFilterPriority === p ? 'active' : ''}" style="--pc: {p === 'none' ? 'var(--text-5)' : priorityColor(p)}"
             onclick={() => ($taskFilterPriority = $taskFilterPriority === p ? '' : p as typeof $taskFilterPriority)}>{p}</button>
         {/each}
       </div>
@@ -525,6 +568,7 @@
               <input class="input" bind:value={editTitle} onkeydown={(e) => e.key === 'Enter' && saveEdit(todo)} />
               <div class="form-row">
                 <select class="select" bind:value={editPriority}>
+                  <option value="none">No priority</option>
                   <option value="high">High</option>
                   <option value="medium">Medium</option>
                   <option value="low">Low</option>
@@ -914,6 +958,23 @@
   .tag-chip.active { background: var(--accent-bg); border-color: var(--accent); }
   .other-chip { color: var(--text-6); border-style: dashed; }
   .other-chip.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-lt); border-style: solid; }
+
+  /* ── Active filter chips ── */
+  .active-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .afilter {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 20px;
+    border: 1px solid var(--accent); background: var(--accent-bg);
+    color: var(--accent-lt); font-size: 0.75rem; cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .afilter:hover { background: var(--accent); color: #fff; }
+  .afilter-x { font-size: 0.8rem; line-height: 1; opacity: 0.8; }
+  .afilter:hover .afilter-x { opacity: 1; }
+  .afilter-group { border-color: var(--accent-purple); color: var(--accent-purple); background: color-mix(in srgb, var(--accent-purple) 14%, transparent); }
+  .afilter-group:hover { background: var(--accent-purple); color: #fff; }
+  .afilter-clear { border-style: dashed; border-color: var(--border-2); background: transparent; color: var(--text-5); }
+  .afilter-clear:hover { background: var(--border); color: var(--text-2); border-style: solid; }
 
   .task-list { display: flex; flex-direction: column; gap: 8px; }
   .empty { color: var(--text-7); font-size: 0.875rem; padding: 20px 0; text-align: center; }

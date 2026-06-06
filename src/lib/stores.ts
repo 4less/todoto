@@ -59,7 +59,7 @@ export const syncState = writable<SyncState>({
 });
 
 export const taskFilterStatus = localStore<'all' | 'pending' | 'done'>('todoto-filter-status', 'all');
-export const taskFilterPriority = localStore<'' | 'high' | 'medium' | 'low'>('todoto-filter-priority', '');
+export const taskFilterPriority = localStore<'' | 'none' | 'high' | 'medium' | 'low'>('todoto-filter-priority', '');
 export const taskFilterTag = localStore<string>('todoto-filter-tag', '');
 export const taskFilterDuePeriod = localStore<'' | 'overdue' | 'today' | 'week' | 'month'>('todoto-filter-due', '');
 export const taskFilterGroupByTags = localStore<string[]>('todoto-filter-group-tags', []);

@@ -64,6 +64,7 @@ pub struct Todo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Priority {
+    None,
     Low,
     Medium,
     High,
@@ -79,9 +80,10 @@ impl Ord for Priority {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         fn rank(p: &Priority) -> u8 {
             match p {
-                Priority::Low => 0,
-                Priority::Medium => 1,
-                Priority::High => 2,
+                Priority::None => 0,
+                Priority::Low => 1,
+                Priority::Medium => 2,
+                Priority::High => 3,
             }
         }
         rank(self).cmp(&rank(other))

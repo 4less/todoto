@@ -238,7 +238,7 @@
   }
   function openNote(id: string) { selectedNoteId.set(id); activeView.set('docs'); }
   function priorityColor(p: string) {
-    return p === 'high' ? 'var(--red)' : p === 'medium' ? 'var(--yellow)' : 'var(--text-5)';
+    return p === 'high' ? 'var(--red)' : p === 'medium' ? 'var(--yellow)' : p === 'low' ? 'var(--text-5)' : 'transparent';
   }
 </script>
 

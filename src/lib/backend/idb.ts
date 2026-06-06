@@ -513,7 +513,7 @@ export const idbBackend: ApiBackend = {
     const todo: Todo = {
       id: uuid(),
       done: false,
-      priority: 'medium',
+      priority: 'none',
       due_date: null,
       tags: [],
       started_at: null,

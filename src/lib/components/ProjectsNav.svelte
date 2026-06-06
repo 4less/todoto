@@ -145,12 +145,9 @@
       <span class="project-icon">
         {@html `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${projectIconSvg(fIcon)}</svg>`}
       </span>
-      <span class="preview-name">{fName.trim() || 'Project name'}</span>
+      <input class="preview-name-input" placeholder="Project name" bind:value={fName}
+        onkeydown={(e) => e.key === 'Enter' && save()} />
     </div>
-
-    <label class="field-label" for="proj-name">Name</label>
-    <input id="proj-name" class="text-input" placeholder="e.g. Work" bind:value={fName}
-      onkeydown={(e) => e.key === 'Enter' && save()} />
 
     <span class="field-label">Tags <span class="field-hint">(tasks with any of these show up)</span></span>
     {#if allTags.length > 0}
@@ -270,7 +267,11 @@
     padding: 10px 12px; border-radius: 10px; background: var(--bg);
     border: 1px solid var(--border); margin-bottom: 6px;
   }
-  .preview-name { font-size: 0.95rem; font-weight: 600; color: var(--text-2); }
+  .preview-name-input {
+    flex: 1; min-width: 0; border: none; background: transparent; outline: none;
+    font-size: 0.95rem; font-weight: 600; color: var(--text-2); font-family: inherit;
+  }
+  .preview-name-input::placeholder { color: var(--text-6); font-weight: 500; }
 
   .field-label { font-size: 0.72rem; font-weight: 600; color: var(--text-5); margin-top: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
   .field-hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text-7); }

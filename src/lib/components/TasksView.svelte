@@ -990,8 +990,11 @@
     background: var(--surface); border: 1px solid var(--accent); border-radius: 12px;
     padding: 16px; display: flex; flex-direction: column; gap: 10px;
   }
-  .edit-form { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+  .edit-form { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0; }
   .form-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  /* Give each control a min basis so they wrap onto new lines in narrow
+     (e.g. subtask) cards instead of being squeezed until their text clips. */
+  .form-row > :global(*) { flex: 1 1 140px; min-width: 0; }
   .form-actions { display: flex; gap: 8px; }
 
   .input {
@@ -1131,6 +1134,10 @@
   .task-card.done { opacity: 1; } /* opacity handled by task-wrap */
 
   .check-btn { background: none; border: none; cursor: pointer; padding: 0; flex-shrink: 0; display: flex; }
+  /* Subtasks are shorter than the 40px play button, so clicking one (which
+     reveals the action bar) would grow the row. Reserve that height on the
+     always-present check button so the card size stays constant. */
+  .child-wrap .check-btn { min-height: 40px; align-items: center; }
 
   /* min-width keeps a "substantial" amount of title on the first line; once the
      remaining space can't fit the action bar, the actions wrap to a new row. */

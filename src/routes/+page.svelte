@@ -25,12 +25,14 @@
   function navMain(id: typeof $activeView) { activeProjectId.set(null); activeView.set(id); }
   function navTo(id: typeof $activeView) { navMain(id); closeDrawer(); }
 
-  // Jump straight to the running ("live") task in focus mode, from anywhere in the app.
-  function jumpToLiveFocus() {
-    const liveId = [...get(activeTimers).keys()][0];
-    if (!liveId) return;
+  // Tasks with a running timer — one sidebar entry is shown per task so several
+  // concurrently-logged tasks can each be jumped to.
+  let liveTasks = $derived($todos.filter((t) => $activeTimers.has(t.id)));
+
+  // Jump straight to a running ("live") task in focus mode, from anywhere in the app.
+  function jumpToTaskFocus(id: string) {
     activeView.set('tasks');
-    focusRequest.set(liveId);
+    focusRequest.set(id);
     closeDrawer();
   }
 
@@ -108,7 +110,9 @@
       const result = await api.syncNow();
       const [n, t, f, p] = await Promise.all([api.getNotes(), api.getTodos(), api.getFolders(), api.getProjects()]);
       notes.set(n); todos.set(t); diskFolders.set(f); projects.set(p);
-      syncState.set({ syncing: false, lastResult: result, lastSync: result.timestamp });
+      // Only advance lastSync on success — a failed attempt must not be shown as
+      // the last sync time.
+      syncState.update((s) => ({ syncing: false, lastResult: result, lastSync: result.success ? result.timestamp : s.lastSync }));
     } catch {
       syncState.update((s) => ({ ...s, syncing: false }));
     }
@@ -189,14 +193,14 @@
         </button>
       {/each}
 
-      {#if $activeTimers.size > 0}
-        <button class="nav-item live-focus" onclick={jumpToLiveFocus}
-          title={sidebarCollapsed ? 'Focus running task' : ''}>
+      {#each liveTasks as t (t.id)}
+        <button class="nav-item live-focus" onclick={() => jumpToTaskFocus(t.id)}
+          title={sidebarCollapsed ? t.title : ''}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="12" rx="10" ry="6"/><circle cx="12" cy="12" r="3"/></svg>
-          {#if !sidebarCollapsed}<span>Focus task</span>{/if}
+          {#if !sidebarCollapsed}<span class="live-task-name">{t.title}</span>{/if}
           <span class="live-pip"></span>
         </button>
-      {/if}
+      {/each}
 
       <ProjectsNav collapsed={sidebarCollapsed} onApply={applyProject} />
     </div>
@@ -259,13 +263,13 @@
         </button>
       {/each}
 
-      {#if $activeTimers.size > 0}
-        <button class="drawer-item live-focus" onclick={jumpToLiveFocus}>
+      {#each liveTasks as t (t.id)}
+        <button class="drawer-item live-focus" onclick={() => jumpToTaskFocus(t.id)}>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="12" rx="10" ry="6"/><circle cx="12" cy="12" r="3"/></svg>
-          <span>Focus task</span>
+          <span class="live-task-name">{t.title}</span>
           <span class="live-pip"></span>
         </button>
-      {/if}
+      {/each}
 
       <ProjectsNav collapsed={false} onApply={applyProject} />
     </div>
@@ -361,6 +365,9 @@
   /* Quick-jump to the running task — green to match the live timer bar. */
   .live-focus { color: var(--green); position: relative; }
   .live-focus:hover { background: color-mix(in srgb, var(--green) 14%, transparent); color: var(--green); }
+  .live-focus svg { flex-shrink: 0; }
+  /* The task name fills the row and truncates so long titles don't overflow. */
+  .live-task-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .live-pip {
     width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0;
     margin-left: auto; animation: live-pip-pulse 1.5s ease-in-out infinite;

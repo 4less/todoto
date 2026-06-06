@@ -31,7 +31,7 @@
       settings.set({ ...form });
       const result = await api.syncNow();
       testResult = result.success ? `✓ ${result.message}` : `✕ ${result.message}`;
-      syncState.update((s) => ({ ...s, lastResult: result, lastSync: result.timestamp }));
+      syncState.update((s) => ({ ...s, lastResult: result, lastSync: result.success ? result.timestamp : s.lastSync }));
       onSaved();
     } finally {
       saving = false;

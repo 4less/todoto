@@ -516,13 +516,15 @@
           <span class="focus-pip"></span>
         </button>
       {/if}
-      <button
-        class="filter-toggle {showFilters ? 'active' : ''}"
-        onclick={toggleFilters}
-        title="Toggle filters (Ctrl/Cmd+F)"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-      </button>
+      {#if !focusMode}
+        <button
+          class="filter-toggle {showFilters ? 'active' : ''}"
+          onclick={toggleFilters}
+          title="Toggle filters (Ctrl/Cmd+F)"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        </button>
+      {/if}
       <button class="fab" onclick={() => (showForm = !showForm)} title="New task">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
@@ -583,7 +585,7 @@
   {/if}
 
   <!-- Filter bar -->
-  {#if showFilters}
+  {#if showFilters && !focusMode}
     <div class="filter-bar">
       <input class="search-input" placeholder="Search tasks…" bind:value={$taskFilterSearch} bind:this={searchInputEl} />
       <div class="filter-chips">

@@ -25,8 +25,10 @@ export const settings = writable<Settings>({
 
 // User-defined project shortcuts (synced via projects.json). Loaded from the backend.
 export const projects = writable<Project[]>([]);
-// Which project filter is currently applied — device-local, drives nav highlight.
-export const activeProjectId = localStore<string | null>('todoto-active-project', null);
+// Which project filter is currently applied — drives the nav highlight. Not
+// persisted: the view always returns to Home on startup, so a remembered project
+// id would highlight a project while Home is actually shown.
+export const activeProjectId = writable<string | null>(null);
 
 // The currently-applied project (or null). Its tags act as a hard prefilter on the
 // Tasks view: only tasks carrying at least one of these tags are shown, the tags are

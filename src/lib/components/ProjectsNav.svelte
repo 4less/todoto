@@ -233,12 +233,16 @@
   .project-icon { display: flex; align-items: center; color: var(--proj-color); flex-shrink: 0; }
   .project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  /* Always occupies its slot in the row (so revealing it on hover doesn't
+     resize the item or shift the name) — only its opacity changes. */
   .project-edit-btn {
     width: 22px; height: 22px; border-radius: 6px; border: none; flex-shrink: 0;
     background: transparent; color: var(--text-7); cursor: pointer;
-    display: none; align-items: center; justify-content: center; transition: background 0.12s, color 0.12s;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.12s, background 0.12s, color 0.12s;
   }
-  .project-item:hover .project-edit-btn { display: flex; }
+  .project-item:hover .project-edit-btn { opacity: 1; pointer-events: auto; }
   .project-edit-btn:hover { background: var(--surface); color: var(--accent-lt); }
 
   .projects-section.collapsed .project-item { justify-content: center; padding: 9px; width: auto; }

@@ -452,8 +452,19 @@
 
   // Clicking anywhere on the page that isn't a todo (or the page chrome) acts as a
   // reset area: collapse the active card, close its notes, and hide subtasks.
+  const RESET_CHROME = '.task-wrap, .page-header, .new-task-form, .filter-bar, .selection-bar';
+
+  // Track where the press began so a text selection that starts inside a card and
+  // ends in the background doesn't fire a reset. Reset only when BOTH the mousedown
+  // and the mouseup happen in the reset area (a genuine background click).
+  let pressInResetArea = false;
+  function handleBackgroundMousedown(e: MouseEvent) {
+    pressInResetArea = !(e.target as HTMLElement).closest(RESET_CHROME);
+  }
+
   function handleBackgroundClick(e: MouseEvent) {
-    if ((e.target as HTMLElement).closest('.task-wrap, .page-header, .new-task-form, .filter-bar, .selection-bar')) return;
+    if (!pressInResetArea) return;
+    if ((e.target as HTMLElement).closest(RESET_CHROME)) return;
     activeId = null;
     notesOpenId = null;
     expandedChildren = new Set();
@@ -463,7 +474,7 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<div class="tasks" class:focus-mode={focusMode} onclick={handleBackgroundClick}>
+<div class="tasks" class:focus-mode={focusMode} onmousedown={handleBackgroundMousedown} onclick={handleBackgroundClick}>
   <header class="page-header">
     <div>
       <h1>{$activeProject ? $activeProject.name : 'Tasks'}</h1>

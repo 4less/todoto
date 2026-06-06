@@ -164,6 +164,9 @@
   let tlColorTags: string[] = $state([]);
   let tlDropdownOpen = $state(false);
   let tlTick = $state(0);
+  // Which day the timeline shows — defaults to today, changed by clicking the heatmap.
+  let tlSelectedDate = $state(localDateStr(new Date()));
+  const tlIsToday = $derived(tlSelectedDate === localDateStr(new Date()));
 
   $effect(() => {
     const id = setInterval(() => { tlTick++; }, 30000);
@@ -183,8 +186,8 @@
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   });
 
-  const tlTodayLabel = $derived(
-    new Date().toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })
+  const tlDateLabel = $derived(
+    new Date(tlSelectedDate + 'T12:00').toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })
   );
 
   function tlTagColor(tags: string[]): string {
@@ -202,13 +205,12 @@
 
   const tlSessions = $derived.by(() => {
     void tlTick;
-    const todayStr = localDateStr(new Date());
     const out: { startFrac: number; widthFrac: number; color: string; tooltip: string }[] = [];
     for (const todo of $todos) {
       for (const s of todo.work_sessions ?? []) {
         if (!s.start || !s.end) continue;
         const startD = new Date(s.start);
-        if (localDateStr(startD) !== todayStr) continue;
+        if (localDateStr(startD) !== tlSelectedDate) continue;
         const endD = new Date(s.end);
         const startMin = startD.getHours() * 60 + startD.getMinutes();
         const endMin   = endD.getHours()   * 60 + endD.getMinutes();
@@ -286,9 +288,10 @@
             <div class="cal-col" style="gap: {GAP}px">
               {#each week as cell}
                 <div
-                  class="cal-cell {cell.date === calGrid.todayStr ? 'cal-today' : ''}"
+                  class="cal-cell {cell.date === calGrid.todayStr ? 'cal-today' : ''} {cell.date && cell.date === tlSelectedDate ? 'cal-selected' : ''} {cell.date ? 'cal-clickable' : ''}"
                   style="background:{cellBg(cell.lvl, cell.date === null)}; width:{CELL}px; height:{CELL}px"
                   title={fmtTooltip(cell)}
+                  onclick={() => { if (cell.date) tlSelectedDate = cell.date; }}
                 ></div>
               {/each}
             </div>
@@ -311,8 +314,8 @@
   <div class="tl-card" onclick={() => { if (tlDropdownOpen) tlDropdownOpen = false; }}>
     <div class="tl-header">
       <div class="tl-title-group">
-        <span class="tl-title">Today</span>
-        <span class="tl-date">{tlTodayLabel}</span>
+        <span class="tl-title">{tlIsToday ? 'Today' : 'Day'}</span>
+        <span class="tl-date">{tlDateLabel}</span>
       </div>
       <div class="tl-dropdown-wrap" onclick={(e) => e.stopPropagation()}>
         <button class="tl-dropdown-btn {tlColorTags.length > 0 ? 'active' : ''}"
@@ -345,7 +348,7 @@
     <!-- Track -->
     <div class="tl-track-wrap">
       <div class="tl-now-label-row" style="--now:{tlNowFrac * 100}%">
-        <span class="tl-now-time">{tlNowLabel}</span>
+        {#if tlIsToday}<span class="tl-now-time">{tlNowLabel}</span>{/if}
       </div>
       <div class="tl-track">
         {#each [6, 12, 18] as h}
@@ -354,7 +357,7 @@
         {#each tlSessions as s}
           <div class="tl-bar" style="left:{s.startFrac*100}%; width:max(3px,{s.widthFrac*100}%); background:{s.color}" title={s.tooltip}></div>
         {/each}
-        <div class="tl-now-line" style="left:{tlNowFrac*100}%"></div>
+        {#if tlIsToday}<div class="tl-now-line" style="left:{tlNowFrac*100}%"></div>{/if}
       </div>
       <div class="tl-hours">
         {#each [0, 3, 6, 9, 12, 15, 18, 21, 24] as h}
@@ -544,7 +547,9 @@
   .cal-col { display: flex; flex-direction: column; }
   .cal-cell { border-radius: 2px; flex-shrink: 0; transition: filter 0.1s; }
   .cal-cell:hover { filter: brightness(1.4); }
+  .cal-clickable { cursor: pointer; }
   .cal-today { outline: 2px solid var(--accent-lt); outline-offset: -1px; }
+  .cal-selected { outline: 2px solid var(--text-2); outline-offset: 1px; }
 
   /* Legend */
   .cal-legend {

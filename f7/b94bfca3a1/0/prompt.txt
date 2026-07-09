@@ -1,0 +1,1 @@
+What do you think would I need to do for this todo app here If I wanted a a function to rewrite and restructure todos with AI, basically claude plugged in via API?

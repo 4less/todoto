@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "a7b7e7531487",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 26,
+  "files_touched": [
+    ".vscode/settings.json",
+    "src-tauri/src/lib.rs",
+    "src/lib/components/DocsView.svelte",
+    "src/lib/components/NotesEditor.svelte",
+    "src/lib/components/ProjectsNav.svelte",
+    "src/lib/components/TasksView.svelte",
+    "src/lib/projectIcons.ts",
+    "src/lib/stores.ts",
+    "src/lib/types.ts",
+    "src/routes/+page.svelte"
+  ],
+  "sessions": [
+    {
+      "metadata": "/a7/b7e7531487/0/metadata.json",
+      "transcript": "/a7/b7e7531487/0/full.jsonl",
+      "compact_transcript": "/a7/b7e7531487/0/transcript.jsonl",
+      "content_hash": "/a7/b7e7531487/0/content_hash.txt",
+      "prompt": "/a7/b7e7531487/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3886,
+    "cache_creation_tokens": 1467827,
+    "cache_read_tokens": 96534636,
+    "output_tokens": 468116,
+    "api_call_count": 287
+  }
+}

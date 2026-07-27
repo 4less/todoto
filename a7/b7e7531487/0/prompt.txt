@@ -1,0 +1,127 @@
+Kras is Mouse, KRAS is human right`?
+
+---
+
+this is literally what I said
+
+---
+
+Please change the design of the todos according to the screenshots.
+
+---
+
+<ide_opened_file>The user opened the file /home/joachim/git/4less/todoto/src/lib/components/TasksView.svelte in the IDE. This may or may not be related to the current task.</ide_opened_file>
+The todoitems still have pill  shape? You did not implement the design at all?
+
+---
+
+<ide_opened_file>The user opened the file /home/joachim/git/4less/todoto/src/lib/components/SettingsPanel.svelte in the IDE. This may or may not be related to the current task.</ide_opened_file>
+Stay closer to the previous screenshots. IN the current version (screenshot) there is still a margin around the items -- something which I explicitly do not want in this design
+
+---
+
+<ide_opened_file>The user opened the file /home/joachim/git/4less/todoto/src/lib/components/SettingsPanel.svelte in the IDE. This may or may not be related to the current task.</ide_opened_file>
+Double click on a task shiould not only open the notes, but also retract them when they're open
+
+---
+
+make a button here to toggle on off showing labels in the todo items. I realize they create a lot of clutter and often it is not necessary to see them. This only affects the unselected state. if a todo is clicked on, the tags should be displayed always
+
+---
+
+In the todoto app store, there is a todo item Feature List with subtasks. please work on these subtasks one by one sorting from easiest to hardest
+
+---
+
+<ide_opened_file>The user opened the file /home/joachim/git/4less/todoto/src/lib/components/SettingsPanel.svelte in the IDE. This may or may not be related to the current task.</ide_opened_file>
+Progressbar: Please fix it in position at the top right. do not let it interfere with the notes icon and the due date, keep its position fixed.
+Project pins: Yes, please drag an drop.
+Daily selection: Yes please. technically, the todos do not need changing. You could in the daily selection page just refer to them via their id. the todos do not necessarily need to know they are pinned, right? Just do whatever you think is cleaner
+Ai generate subtasks, please put this on the backburner
+Please implement drag and drop reparent subtasks and also reorder subtasks
+
+---
+
+The play button and panel is gone?=
+
+---
+
+seems to work now
+
+---
+
+Drag and drop does not work anymore
+
+---
+
+<ide_opened_file>The user opened the file /home/joachim/git/4less/todoto/src/lib/components/TasksView.svelte in the IDE. This may or may not be related to the current task.</ide_opened_file>
+The drag should not only work via the drag handle. this area is too small
+
+---
+
+Pleas eremove the grip, it also does not render nicely in subtasks..
+
+---
+
+<ide_opened_file>The user opened the file /temp/readonly/Bash tool output (ppfp9u) in the IDE. This may or may not be related to the current task.</ide_opened_file>
+Please move the progress bar at the bottom. There is more space when subtasks are there so if fits there nicely. make the width fixed, do not scale the width across the whole horizontal spae
+
+---
+
+I showed you in the screenshot where exactly I want the progress bar. you ignored that. Look closely and put it there
+
+---
+
+<ide_opened_file>The user opened the file /temp/readonly/Bash tool output (ppfp9u) in the IDE. This may or may not be related to the current task.</ide_opened_file>
+make the margins aroud the progressbar smaller, it takes up to much space
+
+---
+
+merge it with the bottom border of the todo and make it less wide, and the blue less strong. It is too distracting.
+
+---
+
+Nope, it does not work
+
+---
+
+<ide_opened_file>The user opened the file /home/joachim/git/4less/todoto/src/routes/+page.svelte in the IDE. This may or may not be related to the current task.</ide_opened_file>
+This does also not work. Why did you think the result would be different when you are conceptionally doing the same?
+
+---
+
+a) it only works for tasks not subtasks
+b) during dragging there is no indication that its hovering the dropzone
+c) when draging, text gets selected and this looks very unclean
+
+---
+
+Again, I can only drag tasks into today not subtasks. I would like to be able to drag subtasks in there as well
+
+---
+
+There a weird thing going on, when a subtask is in today, I can add a subtask of a subtask which is usually not possible. It does not show in the regular task view, but I am wondering whether this breaks anything
+
+---
+
+Please ensure that the markdown editor is not only the same between todos and notes, make sure it actually is the same code! in the past code has somehow diverged whichc indicates that different codebases drive those editors? Use the one from the tasks / todos in notes
+
+---
+
+I changed the function in the code fro the <> symbol to do a lightweight path highlighting with copy function. Can I add another icon that is a full codebox? I kind off want  both :)
+
+---
+
+B
+
+---
+
+I am very confused. there is no new icon ?
+
+---
+
+Why is the progress bar at the bottom of the notes? It should stay with the first item
+
+---
+
+Still only one button

@@ -1,0 +1,287 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "a7b7e7531487",
+  "session_id": "ca96bb07-638c-4f37-8c79-1cafe2694dcb",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-27T12:53:16.260799279Z",
+  "branch": "main",
+  "checkpoints_count": 26,
+  "save_step_count": 26,
+  "files_touched": [
+    ".vscode/settings.json",
+    "src-tauri/src/lib.rs",
+    "src/lib/components/DocsView.svelte",
+    "src/lib/components/NotesEditor.svelte",
+    "src/lib/components/ProjectsNav.svelte",
+    "src/lib/components/TasksView.svelte",
+    "src/lib/projectIcons.ts",
+    "src/lib/stores.ts",
+    "src/lib/types.ts",
+    "src/routes/+page.svelte"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "6d60100eb6e2",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 3886,
+    "cache_creation_tokens": 1467827,
+    "cache_read_tokens": 96534636,
+    "output_tokens": 468116,
+    "api_call_count": 287
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_018q9VuLwBBoHMkPsQPAcan2",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "claude-api"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "6d60100eb6e2",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 11,
+        "end": 12,
+        "entry_ids": [
+          "f813305d-86c5-4237-b4d8-a9e9c4000a57"
+        ],
+        "tool_use_id": "toolu_018q9VuLwBBoHMkPsQPAcan2"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_018q9VuLwBBoHMkPsQPAcan2"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: claude-api",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 26
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-27T12:53:15.869617272Z",
+    "agent_lines": 555,
+    "agent_removed": 100,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 1,
+    "total_committed": 555,
+    "total_lines_changed": 656,
+    "agent_percentage": 99.84756097560977,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 364,
+      "user_lines_removed": 1,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/CLAUDE.md": 79,
+        ".claude/settings.json": 84,
+        ".claude/settings.json.vexp-bak": 94,
+        ".github/copilot-instructions.md": 41,
+        ".vexp/.gitattributes": 2,
+        ".vexp/.gitignore": 14,
+        ".vscode/mcp.json": 14,
+        ".vscode/mcp.json.vexp-bak": 14,
+        ".vscode/settings.json": 22
+      },
+      "user_removed_per_file": {
+        ".vscode/settings.json": 1
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 445,
+      "agent_lines_removed": 49
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 462,
+      "agent_lines_removed": 62
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 481,
+      "agent_lines_removed": 74
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 482,
+      "agent_lines_removed": 75
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 495,
+      "agent_lines_removed": 76
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 551,
+      "agent_lines_removed": 82
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 758,
+      "agent_lines_removed": 95
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 758,
+      "agent_lines_removed": 95
+    },
+    {
+      "checkpoint_number": 10,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 758,
+      "agent_lines_removed": 95
+    },
+    {
+      "checkpoint_number": 11,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 779,
+      "agent_lines_removed": 95
+    },
+    {
+      "checkpoint_number": 12,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 780,
+      "agent_lines_removed": 95
+    },
+    {
+      "checkpoint_number": 13,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 765,
+      "agent_lines_removed": 95
+    },
+    {
+      "checkpoint_number": 14,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 765,
+      "agent_lines_removed": 95
+    },
+    {
+      "checkpoint_number": 15,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 765,
+      "agent_lines_removed": 96
+    },
+    {
+      "checkpoint_number": 16,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 765,
+      "agent_lines_removed": 96
+    },
+    {
+      "checkpoint_number": 17,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 772,
+      "agent_lines_removed": 96
+    },
+    {
+      "checkpoint_number": 18,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 769,
+      "agent_lines_removed": 96
+    },
+    {
+      "checkpoint_number": 19,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 777,
+      "agent_lines_removed": 97
+    },
+    {
+      "checkpoint_number": 20,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 786,
+      "agent_lines_removed": 97
+    },
+    {
+      "checkpoint_number": 21,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 791,
+      "agent_lines_removed": 98
+    },
+    {
+      "checkpoint_number": 22,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 798,
+      "agent_lines_removed": 101
+    },
+    {
+      "checkpoint_number": 23,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 798,
+      "agent_lines_removed": 101
+    },
+    {
+      "checkpoint_number": 24,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 798,
+      "agent_lines_removed": 101
+    },
+    {
+      "checkpoint_number": 25,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 899,
+      "agent_lines_removed": 101
+    },
+    {
+      "checkpoint_number": 26,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 919,
+      "agent_lines_removed": 101
+    },
+    {
+      "checkpoint_number": 27,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 920,
+      "agent_lines_removed": 101
+    }
+  ]
+}

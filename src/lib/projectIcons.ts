@@ -40,3 +40,11 @@ export function projectIconSvg(key: string): string {
 
 export const DEFAULT_PROJECT_ICON = 'folder';
 export const DEFAULT_PROJECT_COLOR = PROJECT_COLORS[0];
+
+// Sentinel icon key: render the project's first letter instead of an SVG glyph.
+export const LETTER_ICON = 'letter';
+
+/** First letter of a project name, upper-cased, for the letter-icon option. */
+export function projectLetter(name: string): string {
+  return (name.trim()[0] ?? '?').toUpperCase();
+}

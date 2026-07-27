@@ -30,6 +30,7 @@ export interface Todo {
   notes?: string | null;
   note_path?: string | null;
   parent_id?: string | null;
+  order?: number | null;
 }
 
 // A user-defined tag-based shortcut shown in the sidebar/drawer.
@@ -64,4 +65,4 @@ export interface CommitInfo {
   message: string;
 }
 
-export type View = 'home' | 'tasks' | 'docs' | 'search';
+export type View = 'home' | 'tasks' | 'today' | 'docs' | 'search';

@@ -73,6 +73,41 @@ export const taskFilterGroupByTags = localStore<string[]>('todoto-filter-group-t
 export const taskFilterSearch = localStore<string>('todoto-filter-search', '');
 export const taskFilterShowOther = localStore<boolean>('todoto-filter-show-other', false);
 export const taskFilterHideUngrouped = localStore<boolean>('todoto-filter-hide-ungrouped', false);
+// Whether tags/labels are shown on todo rows in their unselected/inactive state.
+// A clicked or selected task always shows its tags regardless of this setting.
+export const taskShowTags = localStore<boolean>('todoto-show-tags', true);
+
+// Today's hand-picked workload: a date + the ids of todos selected for that day.
+// Todos are referenced by id only — they don't know they're picked. A stored date
+// other than today means the selection is stale and treated as empty.
+export const todaySelection = localStore<{ date: string; ids: string[] }>('todoto-today', { date: '', ids: [] });
+
+// When true, the Tasks view is filtered to today's hand-picked workload. A view
+// filter (not a separate page) so the task cards/behaviour are identical.
+export const taskFilterToday = writable(false);
+
+/** Local calendar day as YYYY-MM-DD — the key that scopes the daily selection. */
+export function todayKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Id of the todo currently being dragged (null when not dragging). Shared so the
+// sidebar "Today" nav item can act as a drop target for pinning to today.
+export const draggingTodoId = writable<string | null>(null);
+// True while a drag is hovering the sidebar "Today" item (drives its highlight,
+// since :hover isn't reliable during a mouse-button-held drag in some webviews).
+export const dragOverToday = writable(false);
+
+/** Add a todo id to today's selection (scoped to the current day). */
+export function pinTodoToToday(id: string) {
+  const key = todayKey();
+  todaySelection.update((sel) => {
+    const ids = sel.date === key ? [...sel.ids] : [];
+    if (!ids.includes(id)) ids.push(id);
+    return { date: key, ids };
+  });
+}
 
 export const pendingTodos = derived(todos, ($todos) => $todos.filter((t) => !t.done));
 export const doneTodos = derived(todos, ($todos) => $todos.filter((t) => t.done));

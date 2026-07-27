@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, settings, activeProject, activeProjectTags, focusRequest, projectApplyTick } from '$lib/stores';
+  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, taskShowTags, taskFilterToday, todaySelection, todayKey, draggingTodoId, dragOverToday, pinTodoToToday, settings, activeProject, activeProjectTags, focusRequest, projectApplyTick } from '$lib/stores';
   import { api } from '$lib/api';
   import type { Todo, WorkSession } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
@@ -123,6 +123,95 @@
   let expandedChildren: Set<string> = $state(new Set());
   let newChildTitle = $state('');
 
+  // ── Pointer-based drag (HTML5 drag-and-drop is unreliable in Linux WebKitGTK) ─
+  // Drop targets are found via elementFromPoint on mouseup, so nothing depends on
+  // native dragover/drop events firing.
+  let dropTargetId: string | null = $state(null);          // task-wrap highlighted under cursor
+  let pdrag = $state<{ id: string; title: string; x: number; y: number } | null>(null);
+  let pdown: { id: string; x: number; y: number } | null = null;
+  let justDragged = false;                                  // suppress the click after a drag
+
+  function subOrder(t: Todo): number { return t.order ?? new Date(t.created_at).getTime(); }
+  function hasKids(id: string): boolean { return $todos.some((t) => t.parent_id === id); }
+
+  async function reparentTo(todo: Todo, parentId: string | null, order?: number) {
+    const updated = await api.saveTodo({ ...todo, parent_id: parentId, order: order ?? null });
+    // Keep the fields we set even if an older backend build drops `order` on the round-trip,
+    // so reordering is reflected immediately in the UI.
+    const merged = { ...updated, parent_id: parentId, order: order ?? null };
+    todos.update((ts) => ts.map((t) => t.id === merged.id ? merged : t));
+    if (parentId) expandedChildren = new Set(expandedChildren).add(parentId);
+  }
+
+  function rowMouseDown(e: MouseEvent, todo: Todo) {
+    if (e.button !== 0 || editId === todo.id) return;
+    // Don't start a drag from interactive controls or the notes/edit/session areas.
+    if ((e.target as HTMLElement).closest('button, input, select, textarea, a, .task-actions, .edit-form, .notes-panel, .sessions-panel')) return;
+    e.preventDefault(); // prevent text selection / native image-drag before a drag begins
+    pdown = { id: todo.id, x: e.clientX, y: e.clientY };
+  }
+  function windowMouseMove(e: MouseEvent) {
+    if (pdrag) {
+      pdrag = { ...pdrag, x: e.clientX, y: e.clientY };
+      const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+      dragOverToday.set(!!el?.closest('[data-drop-today]'));
+      const tid = (el?.closest('.task-wrap[data-todo-id]') as HTMLElement | null)?.getAttribute('data-todo-id') ?? null;
+      dropTargetId = (tid && tid !== pdrag.id && !hasKids(pdrag.id)) ? tid : null;
+      return;
+    }
+    if (pdown) {
+      const dx = e.clientX - pdown.x, dy = e.clientY - pdown.y;
+      if (dx * dx + dy * dy > 25) { // ~5px threshold before it counts as a drag
+        const todo = $todos.find((t) => t.id === pdown!.id);
+        if (todo) {
+          pdrag = { id: todo.id, title: todo.title, x: e.clientX, y: e.clientY };
+          draggingTodoId.set(todo.id);
+          document.body.style.userSelect = 'none';
+        }
+      }
+    }
+  }
+  async function windowMouseUp(e: MouseEvent) {
+    pdown = null;
+    if (!pdrag) return;
+    const draggedId = pdrag.id;
+    const { clientX: x, clientY: y } = e;
+    endPDrag();
+    const dragged = $todos.find((t) => t.id === draggedId);
+    if (!dragged) return;
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    if (el?.closest('[data-drop-today]')) { pinTodoToToday(draggedId); return; }
+    const targetId = (el?.closest('.task-wrap[data-todo-id]') as HTMLElement | null)?.getAttribute('data-todo-id');
+    const target = targetId ? $todos.find((t) => t.id === targetId) : null;
+    if (target) { await dropOnTask(dragged, target); return; }
+    // Released over empty space → promote a subtask to top-level.
+    if (dragged.parent_id) await reparentTo(dragged, null);
+  }
+  function endPDrag() {
+    pdrag = null; dropTargetId = null; draggingTodoId.set(null); dragOverToday.set(false);
+    document.body.style.userSelect = '';
+    justDragged = true; setTimeout(() => { justDragged = false; }, 0);
+  }
+  async function dropOnTask(dragged: Todo, target: Todo) {
+    if (dragged.id === target.id || hasKids(dragged.id)) return; // a parent can't be nested (one level)
+    if (target.parent_id) {
+      // Onto a subtask → insert before it under the same parent (reorder / reparent-into).
+      const parentId = target.parent_id;
+      if (parentId === dragged.id) return;
+      const sibs = $todos.filter((t) => t.parent_id === parentId && t.id !== dragged.id)
+        .sort((a, b) => subOrder(a) - subOrder(b));
+      const idx = sibs.findIndex((s) => s.id === target.id);
+      const tOrd = subOrder(target);
+      const prev = sibs[idx - 1];
+      await reparentTo(dragged, parentId, prev ? (subOrder(prev) + tOrd) / 2 : tOrd - 1);
+    } else {
+      // Onto a top-level task → nest as its child at the end.
+      if (dragged.parent_id === target.id) return;
+      const kids = $todos.filter((t) => t.parent_id === target.id);
+      await reparentTo(dragged, target.id, kids.reduce((m, k) => Math.max(m, subOrder(k)), 0) + 1);
+    }
+  }
+
   $effect(() => {
     if ($activeTimers.size > 0) {
       if (!tickInterval) tickInterval = setInterval(() => { tick++; }, 1000);
@@ -151,7 +240,16 @@
   let filtered = $derived(
     $todos
       .filter((t) => {
-        if (t.parent_id) return false; // children always appear under their parent
+        if ($taskFilterToday) {
+          // "Today": show the hand-picked ids (a subtask can be pinned too). A pinned
+          // subtask whose parent is also pinned is shown nested under it, so skip its
+          // standalone row to avoid duplication.
+          const ids = $todaySelection.date === todayKey() ? $todaySelection.ids : [];
+          if (!ids.includes(t.id)) return false;
+          if (t.parent_id && ids.includes(t.parent_id)) return false;
+        } else if (t.parent_id) {
+          return false; // children always appear under their parent
+        }
         // Project prefilter: only tasks carrying at least one project tag are in scope.
         if ($activeProjectTags.length > 0 && !$activeProjectTags.some((pt) => t.tags.includes(pt))) return false;
         if ($taskFilterStatus === 'pending' && t.done) return false;
@@ -351,6 +449,12 @@
     confirmDelete = false;
   }
 
+  // ── Today's selection ─────────────────────────────────────────────────────
+  function removeFromToday(id: string) {
+    const key = todayKey();
+    todaySelection.update((sel) => ({ date: key, ids: (sel.date === key ? sel.ids : []).filter((x) => x !== id) }));
+  }
+
   function openNotes(todo: Todo) {
     notesOpenId = todo.id;
   }
@@ -369,20 +473,15 @@
     return new Date(due) < new Date(new Date().toDateString());
   }
 
-  function fmtRelativeDue(due: string | null): string {
+  function fmtDueLabel(due: string | null): string {
     if (!due) return '';
     const today = new Date(new Date().toDateString());
     const target = new Date(due);
     const days = Math.round((target.getTime() - today.getTime()) / 86400000);
-    if (days === 0) return 'today';
-    if (days === 1) return 'tomorrow';
-    if (days === -1) return 'yesterday';
-    if (days < 0) return `${Math.abs(days)}d ago`;
-    if (days < 7) return `in ${days}d`;
-    const weeks = Math.floor(days / 7);
-    if (days < 28) return `in ${weeks}w`;
-    const months = Math.floor(days / 30);
-    return `in ${months}mo`;
+    if (days === 0) return 'Today';
+    if (days === 1) return 'Tomorrow';
+    if (days === -1) return 'Yesterday';
+    return fmtDate(due);
   }
 
   function fmtDate(iso: string | null): string {
@@ -428,20 +527,26 @@
     return `${s}s`;
   }
 
+  let copiedId: string | null = $state(null);
   function copyMarkdown(todo: Todo) {
-    navigator.clipboard?.writeText(serializeAnnotations(todo));
+    let text = serializeAnnotations(todo);
+    if (todo.notes && todo.notes.trim()) text += '\n\n' + todo.notes.trim();
+    navigator.clipboard?.writeText(text);
+    copiedId = todo.id;
+    setTimeout(() => { if (copiedId === todo.id) copiedId = null; }, 1200);
   }
 
   // ── Active-filter chips ─────────────────────────────────────────────────────
   const DUE_LABELS: Record<string, string> = { overdue: 'Overdue', today: 'Today', week: 'This week', month: 'This month' };
   let hasActiveFilters = $derived(
     !!$taskFilterSearch || $taskFilterStatus !== 'all' || $taskFilterPriority !== '' ||
-    $taskFilterTag !== '' || $taskFilterDuePeriod !== '' || $taskFilterGroupByTags.length > 0
+    $taskFilterTag !== '' || $taskFilterDuePeriod !== '' || $taskFilterGroupByTags.length > 0 ||
+    $taskFilterToday
   );
   function clearAllFilters() {
     $taskFilterSearch = ''; $taskFilterStatus = 'all'; $taskFilterPriority = '';
     $taskFilterTag = ''; $taskFilterDuePeriod = ''; $taskFilterGroupByTags = [];
-    $taskFilterHideUngrouped = false;
+    $taskFilterHideUngrouped = false; $taskFilterToday = false;
   }
 
   function focusSearchSoon() { setTimeout(() => searchInputEl?.focus(), 0); }
@@ -460,6 +565,16 @@
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
       e.preventDefault();
       showForm = true;
+    }
+    // Ctrl/Cmd+M — add a subtask to the active (or focused) root task.
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'm') {
+      const target = activeId ?? focusTodoId;
+      if (target && !$todos.find((t) => t.id === target)?.parent_id) {
+        e.preventDefault();
+        addingChildFor = target;
+        newChildTitle = '';
+        expandedChildren = new Set(expandedChildren).add(target);
+      }
     }
     if (e.key === 'Escape') {
       activeId = null;
@@ -490,12 +605,15 @@
 
 </script>
 
-<svelte:window onkeydown={handleGlobalKeydown} />
+<svelte:window onkeydown={handleGlobalKeydown} onmousemove={windowMouseMove} onmouseup={windowMouseUp} />
 
 <div class="tasks" class:focus-mode={focusMode} onmousedown={handleBackgroundMousedown} onclick={handleBackgroundClick}>
+  {#if pdrag}
+    <div class="drag-ghost" style="left:{pdrag.x}px; top:{pdrag.y}px;">{pdrag.title}</div>
+  {/if}
   <header class="page-header">
     <div>
-      <h1>{$activeProject ? $activeProject.name : 'Tasks'}</h1>
+      <h1>{$taskFilterToday ? 'Today' : ($activeProject ? $activeProject.name : 'Tasks')}</h1>
       <p class="subtitle">
         {filtered.length} of {rootTodoCount} tasks
         {#if $activeProject}<span class="scope-tags">· {$activeProjectTags.map((t) => '#' + t).join(' ')}</span>{/if}
@@ -518,6 +636,13 @@
       {/if}
       {#if !focusMode}
         <button
+          class="filter-toggle {$taskShowTags ? 'active' : ''}"
+          onclick={() => ($taskShowTags = !$taskShowTags)}
+          title="{$taskShowTags ? 'Hide tags on tasks' : 'Show tags on tasks'}"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+        </button>
+        <button
           class="filter-toggle {showFilters ? 'active' : ''}"
           onclick={toggleFilters}
           title="Toggle filters (Ctrl/Cmd+F)"
@@ -534,6 +659,9 @@
   <!-- Active filters — each chip removes that filter on click -->
   {#if hasActiveFilters}
     <div class="active-filters">
+      {#if $taskFilterToday}
+        <button class="afilter" onclick={() => ($taskFilterToday = false)}>Today<span class="afilter-x">✕</span></button>
+      {/if}
       {#if $taskFilterSearch}
         <button class="afilter" onclick={() => ($taskFilterSearch = '')} title="Clear search">“{$taskFilterSearch}”<span class="afilter-x">✕</span></button>
       {/if}
@@ -657,12 +785,16 @@
         {@const totalMs = isChild ? ownMs : ownMs + childrenMs(todo.id)}
         {@const isSelected = selectedIds.has(todo.id)}
         {@const isActive = activeId === todo.id}
-        {@const hasChildren = !isChild && $todos.some((t) => t.parent_id === todo.id)}
+        {@const hasChildren = !todo.parent_id && $todos.some((t) => t.parent_id === todo.id)}
         {@const childTimerHidden = hasChildren && !expandedChildren.has(todo.id) && $todos.some((t) => t.parent_id === todo.id && $activeTimers.has(t.id))}
 
         {@const hasNotes = notesOpenId === todo.id}
-        <div class="task-wrap {isChild ? 'child-wrap' : ''} {todo.done ? 'done' : ''} {isTimerActive || childTimerHidden ? 'wrap-timer' : ''} {isSelected ? 'wrap-selected' : ''} {isActive ? 'wrap-active' : ''} {hasNotes ? 'with-notes' : ''}">
-        <div class="task-card">
+        <div class="task-wrap {isChild ? 'child-wrap' : ''} {todo.done ? 'done' : ''} {isTimerActive || childTimerHidden ? 'wrap-timer' : ''} {isSelected ? 'wrap-selected' : ''} {isActive ? 'wrap-active' : ''} {hasNotes ? 'with-notes' : ''} {dropTargetId === todo.id ? 'drag-target' : ''} {pdrag?.id === todo.id ? 'dragging' : ''}"
+        data-todo-id={todo.id}>
+        <div class="task-card" onmousedown={(e) => rowMouseDown(e, todo)}>
+          {#if !isChild && todo.priority !== 'none'}
+            <span class="prio-edge" style="background:{priorityColor(todo.priority)}" title="{todo.priority} priority"></span>
+          {/if}
           {#if editId === todo.id}
             <div class="edit-form">
               <input class="input" bind:value={editTitle} onkeydown={(e) => e.key === 'Enter' && saveEdit(todo)} />
@@ -684,7 +816,7 @@
           {:else}
             <button class="check-btn" onclick={() => toggleDone(todo)} title="{todo.done ? 'Mark pending' : 'Mark done'}">
               {#if todo.done}
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" fill="var(--accent)"/><polyline points="7.5 12.5 10.5 15.5 16.5 9" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
               {:else}
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-8)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>
               {/if}
@@ -692,7 +824,7 @@
 
             <div class="task-body"
               onclick={(e) => {
-                if (e.detail > 1) return;
+                if (e.detail > 1 || justDragged) return;
                 if (e.ctrlKey || e.metaKey) {
                   toggleSelect(todo.id);
                 } else {
@@ -706,44 +838,53 @@
                   }
                 }
               }}
-              ondblclick={() => openNotes(todo)}>
+              ondblclick={() => notesOpenId === todo.id ? closeNotes() : openNotes(todo)}>
               <div class="task-title-row">
-                <span class="priority-bar" style="background:{priorityColor(todo.priority)}" title="{todo.priority} priority"></span>
-                <span class="task-title">{todo.title}</span>
-                {#if todo.notes && !isActive && !isSelected}
-                  <span class="notes-indicator" title="Has notes">
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                  </span>
-                {/if}
+                <span class="task-title" ondblclick={(e) => { e.stopPropagation(); startEdit(todo); }} title="Double-click to edit">{todo.title}</span>
                 {#if isTimerActive && timerStartMs !== undefined && !isActive && !isSelected}
                   <span class="timer-running">{formatElapsed(timerStartMs)}</span>
                 {/if}
               </div>
 
               <div class="task-meta">
-                {#if todo.due_date}
-                  <span class="due-chip {isOverdue(todo.due_date) && !todo.done ? 'overdue' : ''}" title={todo.due_date}>
-                    {fmtRelativeDue(todo.due_date)}
-                  </span>
+                {#if todo.done}
+                  {#if todo.finished_at}
+                    <span class="completed-note">Completed {fmtDate(todo.finished_at)}</span>
+                  {/if}
+                {:else}
+                  {#if $taskShowTags || isActive || isSelected}
+                    {#each todo.tags as tag}
+                      <button class="tag-pill" onclick={(e) => { e.stopPropagation(); $taskFilterTag = tag; }} title="Filter by #{tag}">#{tag}</button>
+                    {/each}
+                  {/if}
+                  {#if totalMs > 0}
+                    <button
+                      class="time-chip logged {expandedSessions === todo.id ? 'active' : ''}"
+                      onclick={(e) => { e.stopPropagation(); expandedSessions = expandedSessions === todo.id ? null : todo.id; }}
+                      title="View work sessions"
+                    ><svg class="meta-ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>{formatDuration(totalMs)}</button>
+                  {/if}
+                  {#if todo.started_at}
+                    <span class="time-chip started" title="Started {fmtDateTime(todo.started_at)}">▶ {fmtDate(todo.started_at)}</span>
+                  {/if}
                 {/if}
-                {#if todo.started_at}
-                  <span class="time-chip started" title="Started {fmtDateTime(todo.started_at)}">▶ {fmtDate(todo.started_at)}</span>
-                {/if}
-                {#if todo.finished_at}
-                  <span class="time-chip finished" title="Finished {fmtDateTime(todo.finished_at)}">✓ {fmtDate(todo.finished_at)}</span>
-                {/if}
-                {#if totalMs > 0}
-                  <button
-                    class="time-chip logged {expandedSessions === todo.id ? 'active' : ''}"
-                    onclick={(e) => { e.stopPropagation(); expandedSessions = expandedSessions === todo.id ? null : todo.id; }}
-                    title="View work sessions"
-                  >⏱ {formatDuration(totalMs)}</button>
-                {/if}
-                {#each todo.tags as tag}
-                  <button class="tag-chip" onclick={(e) => { e.stopPropagation(); $taskFilterTag = tag; }} title="Filter by #{tag}">#{tag}</button>
-                {/each}
               </div>
             </div>
+            {#if !isActive && !isSelected}
+              <div class="task-right">
+                {#if todo.due_date && !todo.done}
+                  <span class="due-right {isOverdue(todo.due_date) ? 'overdue' : ''}" title={todo.due_date}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                    {fmtDueLabel(todo.due_date)}
+                  </span>
+                {/if}
+                {#if todo.notes}
+                  <span class="notes-indicator" title="Has notes">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                  </span>
+                {/if}
+              </div>
+            {/if}
             {#if isActive || isSelected}
               <div class="card-actions">
               {#if isTimerActive && timerStartMs !== undefined}
@@ -764,7 +905,12 @@
                 {/if}
               </button>
               <div class="task-actions" onclick={(e) => e.stopPropagation()}>
-                {#if !isChild}
+                {#if $taskFilterToday}
+                  <button class="task-action-btn active" title="Remove from Today" onclick={() => removeFromToday(todo.id)}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="7.05"/></svg>
+                  </button>
+                {/if}
+                {#if !todo.parent_id}
                   <button class="task-action-btn" title="Add subtask"
                     onclick={() => { addingChildFor = addingChildFor === todo.id ? null : todo.id; newChildTitle = ''; }}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -782,6 +928,13 @@
                 <button class="task-action-btn {notesOpenId === todo.id ? 'active' : ''}" title="{notesOpenId === todo.id ? 'Close notes' : 'Open notes'}"
                   onclick={() => notesOpenId === todo.id ? closeNotes() : openNotes(todo)}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                </button>
+                <button class="task-action-btn" title="{copiedId === todo.id ? 'Copied!' : 'Copy as markdown'}" onclick={() => copyMarkdown(todo)}>
+                  {#if copiedId === todo.id}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  {:else}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  {/if}
                 </button>
                 <div class="task-actions-divider"></div>
                 <button class="task-action-btn" title="Edit" onclick={() => startEdit(todo)}>
@@ -841,10 +994,18 @@
           </div>
         {/if}
 
-        {#if !isChild}
-          {@const children = $todos.filter((t) => t.parent_id === todo.id)}
+        {#if !todo.parent_id}
+          {@const children = $todos
+            .filter((t) => t.parent_id === todo.id)
+            .sort((a, b) => (Number(a.done) - Number(b.done)) || (subOrder(a) - subOrder(b)))}
           {#if children.length > 0 || addingChildFor === todo.id}
             <div class="children-zone" class:collapsed={!expandedChildren.has(todo.id)}>
+              {#if !todo.done}
+                {@const doneKids = children.filter((k) => k.done).length}
+                <span class="subprogress" title="{doneKids}/{children.length} subtasks done">
+                  <span class="subprogress-fill" style="width:{Math.round((doneKids / children.length) * 100)}%"></span>
+                </span>
+              {/if}
               {#each children as child (child.id)}
                 <div class="child-task-wrap {notesOpenId === child.id ? 'child-expanded' : ''}">
                   {@render taskCard(child, true)}
@@ -916,7 +1077,7 @@
       {/if}
       {#if doneTodos.length > 0}
         <div class="section-divider">
-          <span>Completed · {doneTodos.length}</span>
+          <span>Completed ({doneTodos.length})</span>
         </div>
         {#each doneTodos as todo (todo.id)}
           {@render taskCard(todo, false)}
@@ -933,7 +1094,7 @@
 
       {#if doneTodos.length > 0}
         <div class="section-divider">
-          <span>Completed · {doneTodos.length}</span>
+          <span>Completed ({doneTodos.length})</span>
         </div>
         {#each doneTodos as todo (todo.id)}
           {@render taskCard(todo, false)}
@@ -975,9 +1136,10 @@
 
 <style>
 
-  .tasks { height: 100%; overflow-y: auto; padding: 28px 32px 16px; display: flex; flex-direction: column; gap: 16px; }
+  /* --pad-x insets the chrome (header/filters) while task rows stay full-bleed. */
+  .tasks { --pad-x: 24px; height: 100%; overflow-y: auto; padding: 24px 0 14px; display: flex; flex-direction: column; gap: 12px; background: var(--surface); }
 
-  .page-header { display: flex; justify-content: space-between; align-items: flex-start; }
+  .page-header { display: flex; justify-content: space-between; align-items: flex-start; padding: 0 var(--pad-x); }
   .header-actions { display: flex; align-items: center; gap: 8px; }
   h1 { font-size: 1.6rem; font-weight: 700; color: var(--text-1); }
   .subtitle { color: var(--text-6); font-size: 0.875rem; margin-top: 2px; }
@@ -1003,6 +1165,7 @@
   .new-task-form {
     background: var(--surface); border: 1px solid var(--accent); border-radius: 12px;
     padding: 16px; display: flex; flex-direction: column; gap: 10px;
+    margin: 0 var(--pad-x);
   }
   .edit-form { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0; }
   .form-row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1039,6 +1202,7 @@
   .filter-bar {
     background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
     padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+    margin: 0 var(--pad-x);
   }
   .search-input {
     background: var(--bg); border: 1px solid var(--border-2); border-radius: 8px;
@@ -1060,7 +1224,7 @@
   .other-chip.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-lt); border-style: solid; }
 
   /* ── Active filter chips ── */
-  .active-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .active-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 0 var(--pad-x); }
   .afilter {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 10px; border-radius: 20px;
@@ -1076,21 +1240,19 @@
   .afilter-clear { border-style: dashed; border-color: var(--border-2); background: transparent; color: var(--text-5); }
   .afilter-clear:hover { background: var(--border); color: var(--text-2); border-style: solid; }
 
-  .task-list { display: flex; flex-direction: column; gap: 8px; }
-  .empty { color: var(--text-7); font-size: 0.875rem; padding: 20px 0; text-align: center; }
+  .task-list { display: flex; flex-direction: column; gap: 0; }
+  .empty { color: var(--text-7); font-size: 0.875rem; padding: 20px var(--pad-x); text-align: center; }
 
   .section-divider {
     display: flex; align-items: center; gap: 10px;
-    margin: 12px 0 4px; color: var(--text-7); font-size: 0.72rem;
+    margin: 16px 0 4px; padding: 6px var(--pad-x); border-radius: 0;
+    background: var(--surface-alt); color: var(--text-6); font-size: 0.72rem;
     font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em;
-  }
-  .section-divider::before, .section-divider::after {
-    content: ''; flex: 1; height: 1px; background: var(--border);
   }
 
   .group-divider {
     display: flex; align-items: center; gap: 10px;
-    margin: 20px 0 6px; color: var(--accent-lt); font-size: 0.82rem;
+    margin: 20px 0 6px; padding: 0 var(--pad-x); color: var(--accent-lt); font-size: 0.82rem;
     font-weight: 700; letter-spacing: 0.03em;
   }
   .group-divider:first-child { margin-top: 4px; }
@@ -1103,25 +1265,44 @@
   .group-tag-chip.active { background: color-mix(in srgb, var(--accent-purple) 15%, transparent); border-color: var(--accent-purple); color: var(--accent-purple); }
   .group-clear-chip { color: var(--text-5); border-color: var(--border-2); }
 
-  /* ── Task wrap (unified border container) ── */
+  /* ── Task row (flat list, hairline dividers between rows) ── */
   .task-wrap {
     position: relative;
-    border: 1px solid var(--border); border-radius: 14px;
-    background: var(--surface); overflow: hidden;
-    transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+    border: none; border-bottom: 1px solid var(--border-2); border-radius: 0;
+    background: transparent; overflow: hidden;
+    transition: background 0.15s;
   }
-  .task-wrap:hover { border-color: var(--border-2); }
+  .task-wrap:hover { background: var(--surface-alt); }
   .task-wrap.done { opacity: 0.55; }
   /* Live (timer running) — green vertical bar down the left edge. */
   .task-wrap.wrap-timer::before {
-    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
     background: var(--green); z-index: 1;
   }
-  /* Active (clicked) just reveals the action bar — keep it neutral. The blue
-     accent surround is reserved for multi-select. */
-  .task-wrap.wrap-active { border-color: var(--border-2); }
-  .task-wrap.wrap-selected { border-color: var(--accent); background: var(--accent-bg); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
-  .task-wrap.child-wrap { border-radius: 10px; }
+  /* Active (clicked) just reveals the action bar — a subtle row tint. */
+  .task-wrap.wrap-active { background: var(--surface-alt); }
+  .task-wrap.wrap-selected {
+    background: var(--accent-bg);
+    border-bottom-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    box-shadow: none;
+  }
+  /* Subtask rows sit inside their parent — no divider or surface of their own. */
+  .task-wrap.child-wrap { border-bottom: none; border-radius: 0; background: transparent; }
+  /* While editing, let the row overflow so the date-picker calendar isn't clipped
+     by the row's bounds (which are short when subtasks are collapsed). */
+  .task-wrap:has(.edit-form) { overflow: visible; }
+  /* Drag & drop feedback */
+  .task-wrap.dragging { opacity: 0.4; }
+  .task-wrap.drag-target { background: var(--accent-bg); box-shadow: inset 0 0 0 2px var(--accent); }
+  /* Cursor-following label shown while dragging (pointer-based DnD). */
+  .drag-ghost {
+    position: fixed; z-index: 9999; pointer-events: none;
+    transform: translate(14px, 10px);
+    background: var(--surface); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 6px 12px; font-size: 0.85rem; color: var(--text-1);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
 
   .task-card > .task-action-btn { align-self: center; }
   .card-play-btn {
@@ -1138,9 +1319,14 @@
   .card-play-btn.stop:hover { background: var(--red-bg); }
 
   .task-card {
+    position: relative;
     background: transparent; border: none; border-radius: 0;
-    padding: 14px 18px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 13px var(--pad-x); display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   }
+  /* Priority shown as a colour bar flush against the row's left edge. */
+  .prio-edge { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; z-index: 0; }
+  /* Subtask rows sit tighter than their inset parent. */
+  .children-zone .task-card { padding: 7px 10px; }
 
   /* Action controls (focus / play / edit etc.) grouped so they can flow onto
      their own row when there isn't room for a substantial slice of the title. */
@@ -1157,7 +1343,6 @@
      remaining space can't fit the action bar, the actions wrap to a new row. */
   .task-body { flex: 1; min-width: 10rem; cursor: pointer; align-self: stretch; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
   .task-title-row { display: flex; align-items: center; gap: 8px; }
-  .priority-bar { width: 3px; height: 18px; border-radius: 2px; flex-shrink: 0; }
   .task-title { font-size: 0.95rem; font-weight: 400; color: var(--text-1); flex: 1; min-width: 0; word-break: break-word; }
   .task-wrap.done .task-title { text-decoration: line-through; color: var(--text-6); }
 
@@ -1169,28 +1354,56 @@
 
   .task-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
-  .due-chip {
-    font-size: 0.72rem; font-weight: 600; color: var(--yellow); background: var(--yellow-bg);
-    padding: 2px 8px; border-radius: 20px;
-  }
-  .due-chip.overdue { color: var(--red); background: var(--red-bg); }
-
   .time-chip {
     font-size: 0.75rem; padding: 0; background: transparent; border-radius: 0;
   }
   .time-chip.started { color: var(--text-4); }
-  .time-chip.finished { color: var(--green); }
   .time-chip.logged {
-    color: var(--text-4); background: transparent; border: none; cursor: pointer; padding: 0;
+    display: inline-flex; align-items: center; gap: 4px;
+    color: var(--text-5); background: transparent; border: none; cursor: pointer; padding: 0;
     transition: color 0.12s;
   }
   .time-chip.logged:hover, .time-chip.logged.active { color: var(--accent-purple); }
+  .meta-ico { flex-shrink: 0; }
 
   .tag-chip {
     font-size: 0.78rem; font-weight: 500; color: var(--accent-lt); background: transparent;
     border: none; padding: 0; cursor: pointer;
   }
   .tag-chip:hover { color: var(--accent-purple); text-decoration: underline; }
+
+  /* Tag pills shown under the task title */
+  .tag-pill {
+    font-size: 0.72rem; font-weight: 500;
+    color: var(--accent-lt); background: var(--accent-bg);
+    border: none; padding: 2px 9px; border-radius: 20px; cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .tag-pill:hover { background: var(--accent-bg-2); color: var(--accent-ltr); }
+
+  .completed-note { font-size: 0.78rem; color: var(--text-6); }
+
+  /* Right-side cluster: subtask progress, due date, notes indicator */
+  .task-right {
+    display: flex; align-items: center; gap: 12px;
+    margin-left: auto; padding-left: 8px; flex-shrink: 0; align-self: center;
+  }
+  .due-right {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 0.78rem; color: var(--text-5); white-space: nowrap;
+  }
+  .due-right.overdue { color: var(--red); }
+  /* Sits on the todo's bottom border — a thin, muted segment, not a floating bar. */
+  .subprogress {
+    position: absolute; left: 10px; bottom: 0; z-index: 1;
+    width: 160px; max-width: calc(100% - 20px); height: 3px;
+    border-radius: 2px 2px 0 0; background: var(--border-2); overflow: hidden;
+  }
+  .subprogress-fill {
+    display: block; height: 100%;
+    background: color-mix(in srgb, var(--accent) 55%, transparent);
+    border-radius: 2px 2px 0 0; transition: width 0.2s;
+  }
 
   /* Work sessions panel */
   .sessions-panel {
@@ -1259,8 +1472,6 @@
   .focus-mode .task-card { border-color: transparent; }
   .focus-mode .focus-view {
     min-height: 0;
-    /* break out of the page's horizontal padding to span edge-to-edge */
-    margin: 0 -32px;
     border-top: 1px solid var(--border);
   }
   .focus-mode .focus-view .task-wrap {
@@ -1281,7 +1492,7 @@
     background: var(--green); z-index: 1;
   }
   @media (max-width: 600px) {
-    .focus-mode .focus-view { margin: 0 -16px; }
+    .focus-mode .focus-view { margin: 0; }
   }
   /* Selection bar */
   .selection-bar {
@@ -1289,7 +1500,7 @@
     background: var(--surface-alt); border: 1px solid var(--accent); border-radius: 14px;
     padding: 10px 14px; display: flex; flex-direction: column; gap: 8px;
     box-shadow: 0 -4px 24px rgba(99, 102, 241, 0.15);
-    margin-top: auto;
+    margin: auto var(--pad-x) 0;
   }
   .sel-top-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .sel-count { font-size: 0.85rem; color: var(--accent-ltr); font-weight: 600; white-space: nowrap; }
@@ -1310,7 +1521,7 @@
 
 
   @media (max-width: 600px) {
-    .tasks { padding: 16px 16px 12px; }
+    .tasks { --pad-x: 16px; padding: 16px 0 12px; }
     .form-row { flex-direction: column; }
     .selection-bar { border-radius: 10px; }
     .sel-btn { padding: 6px 10px; font-size: 0.78rem; flex-shrink: 0; }
@@ -1353,9 +1564,14 @@
     margin-left: -34px;
     width: calc(100% + 46px);
   }
+  /* Broken-out (notes-open) subtask: use a top-level row's padding so its checkbox
+     and content align with the other tasks instead of the narrow subtask inset. */
+  .children-zone .child-task-wrap.child-expanded .task-card { padding: 13px var(--pad-x); }
+  .children-zone .child-task-wrap.child-expanded .check-btn { min-height: 0; }
 
   /* The indented zone that wraps child cards */
   .children-zone {
+    position: relative;
     margin-left: 22px;
     padding-left: 10px;
     /* right padding keeps subtask borders clear of the parent card's edge */
@@ -1418,7 +1634,7 @@
     border-top: 1px solid var(--border) !important;
   }
 
-  .children-zone.collapsed > :not(.child-add-form) { display: none; }
+  .children-zone.collapsed > :not(.child-add-form):not(.subprogress) { display: none; }
 
 
 </style>

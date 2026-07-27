@@ -4,7 +4,7 @@
   import type { Project } from '$lib/types';
   import {
     PROJECT_ICONS, PROJECT_COLORS, projectIconSvg,
-    DEFAULT_PROJECT_ICON, DEFAULT_PROJECT_COLOR,
+    DEFAULT_PROJECT_ICON, DEFAULT_PROJECT_COLOR, LETTER_ICON, projectLetter,
   } from '$lib/projectIcons';
 
   let { collapsed = false, onApply }: {
@@ -92,6 +92,30 @@
     if ($activeProjectId === editId) activeProjectId.set(null);
     editorOpen = false;
   }
+
+  // ── Drag-and-drop reordering of pins ─────────────────────────────────────────
+  let dragIndex = $state<number | null>(null);
+  let dragOverIndex = $state<number | null>(null);
+
+  function onDragStart(e: DragEvent, i: number) {
+    dragIndex = i;
+    if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(i)); }
+  }
+  function onDragOver(e: DragEvent, i: number) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    dragOverIndex = i;
+  }
+  async function onDrop(i: number) {
+    const from = dragIndex;
+    dragIndex = null; dragOverIndex = null;
+    if (from === null || from === i) return;
+    const next = [...$projects];
+    const [moved] = next.splice(from, 1);
+    next.splice(i, 0, moved);
+    await persist(next);
+  }
+  function onDragEnd() { dragIndex = null; dragOverIndex = null; }
 </script>
 
 <div class="projects-section {collapsed ? 'collapsed' : ''}">
@@ -104,15 +128,26 @@
     </div>
   {/if}
 
-  {#each $projects as p (p.id)}
+  {#each $projects as p, i (p.id)}
     <button
       class="project-item {$activeProjectId === p.id ? 'active' : ''}"
+      class:dragging={dragIndex === i}
+      class:drag-over={dragOverIndex === i && dragIndex !== i}
+      draggable="true"
+      ondragstart={(e) => onDragStart(e, i)}
+      ondragover={(e) => onDragOver(e, i)}
+      ondrop={() => onDrop(i)}
+      ondragend={onDragEnd}
       onclick={() => onApply(p)}
       title={collapsed ? p.name : ''}
       style="--proj-color: {p.color}"
     >
       <span class="project-icon">
-        {@html `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${projectIconSvg(p.icon)}</svg>`}
+        {#if p.icon === LETTER_ICON}
+          <span class="project-letter">{projectLetter(p.name)}</span>
+        {:else}
+          {@html `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${projectIconSvg(p.icon)}</svg>`}
+        {/if}
       </span>
       {#if !collapsed}
         <span class="project-name">{p.name}</span>
@@ -143,7 +178,11 @@
 
     <div class="editor-preview" style="--proj-color: {fColor}">
       <span class="project-icon">
-        {@html `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${projectIconSvg(fIcon)}</svg>`}
+        {#if fIcon === LETTER_ICON}
+          <span class="project-letter lg">{fName.trim() ? projectLetter(fName) : 'A'}</span>
+        {:else}
+          {@html `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${projectIconSvg(fIcon)}</svg>`}
+        {/if}
       </span>
       <input class="preview-name-input" placeholder="Project name" bind:value={fName}
         onkeydown={(e) => e.key === 'Enter' && save()} />
@@ -172,6 +211,10 @@
 
     <span class="field-label">Icon</span>
     <div class="icon-grid">
+      <button class="icon-pick {fIcon === LETTER_ICON ? 'on' : ''}" onclick={() => (fIcon = LETTER_ICON)}
+        style="--proj-color: {fColor}" title="Letter" aria-label="Letter">
+        <span class="icon-letter">{fName.trim() ? projectLetter(fName) : 'A'}</span>
+      </button>
       {#each PROJECT_ICONS as ic}
         <button class="icon-pick {fIcon === ic.key ? 'on' : ''}" onclick={() => (fIcon = ic.key)}
           style="--proj-color: {fColor}" title={ic.key} aria-label={ic.key}>
@@ -228,9 +271,14 @@
   }
   .project-item:hover { background: var(--border); color: var(--text-2); }
   .project-item.active { background: var(--accent-bg); color: var(--text-2); }
+  .project-item.dragging { opacity: 0.4; }
+  .project-item.drag-over { box-shadow: inset 0 2px 0 var(--accent); }
   .project-item.active .project-icon { color: var(--proj-color); }
 
   .project-icon { display: flex; align-items: center; color: var(--proj-color); flex-shrink: 0; }
+  .project-letter { font-size: 15px; font-weight: 700; line-height: 1; width: 18px; text-align: center; }
+  .project-letter.lg { font-size: 17px; width: 20px; }
+  .icon-letter { font-size: 16px; font-weight: 700; line-height: 1; }
   .project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* Always occupies its slot in the row (so revealing it on hover doesn't

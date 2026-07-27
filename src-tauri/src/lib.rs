@@ -59,6 +59,9 @@ pub struct Todo {
     pub note_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    // Manual sort position among siblings (subtasks). Absent = fall back to created_at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

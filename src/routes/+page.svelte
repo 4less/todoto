@@ -5,7 +5,7 @@
   import { api } from '$lib/api';
   import { notes, todos, settings, activeView, showSettings, syncState, diskFolders, theme,
     projects, activeProjectId, taskFilterTag, taskFilterGroupByTags, taskFilterHideUngrouped,
-    activeTimers, focusRequest, projectApplyTick } from '$lib/stores';
+    taskFilterToday, draggingTodoId, dragOverToday, activeTimers, focusRequest, projectApplyTick } from '$lib/stores';
   import type { Project } from '$lib/types';
   import HomeView from '$lib/components/HomeView.svelte';
   import TasksView from '$lib/components/TasksView.svelte';
@@ -22,7 +22,21 @@
 
   function closeDrawer() { drawerOpen = false; }
   // Switching to a top-level view clears any applied project filter highlight.
-  function navMain(id: typeof $activeView) { activeProjectId.set(null); activeView.set(id); }
+  function navMain(id: typeof $activeView) {
+    activeProjectId.set(null);
+    // "Today" is a filtered Tasks view rather than its own page.
+    if (id === 'today') { taskFilterToday.set(true); activeView.set('tasks'); return; }
+    taskFilterToday.set(false);
+    activeView.set(id);
+  }
+  function isNavActive(id: typeof $activeView) {
+    if (id === 'today') return $activeView === 'tasks' && $taskFilterToday;
+    return $activeView === id && !$activeProjectId && !$taskFilterToday;
+  }
+
+  // Dragging a task onto the sidebar "Today" item pins it to today's workload.
+  // The drop is handled by the pointer-drag logic in TasksView (which finds this
+  // element via `data-drop-today`); here we only flag it as a valid target.
   function navTo(id: typeof $activeView) { navMain(id); closeDrawer(); }
 
   // Tasks with a running timer — one sidebar entry is shown per task so several
@@ -43,6 +57,7 @@
     taskFilterTag.set('');
     taskFilterGroupByTags.set([]);
     taskFilterHideUngrouped.set(false);
+    taskFilterToday.set(false);
     activeProjectId.set(p.id);
     activeView.set('tasks');
     projectApplyTick.update((n) => n + 1);
@@ -143,6 +158,7 @@
   const navItems = [
     { id: 'home'   as const, label: 'Home',   svg: svgHome   },
     { id: 'tasks'  as const, label: 'Tasks',  svg: svgTasks  },
+    { id: 'today'  as const, label: 'Today',  svg: svgToday  },
     { id: 'docs'   as const, label: 'Docs',   svg: svgDocs   },
     { id: 'search' as const, label: 'Search', svg: svgSearch },
   ];
@@ -153,6 +169,9 @@
   }
   function svgTasks() {
     return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`;
+  }
+  function svgToday() {
+    return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="7.05"/></svg>`;
   }
   function svgDocs() {
     return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
@@ -185,7 +204,10 @@
     <div class="sidebar-nav">
       {#each navItems as item}
         <button
-          class="nav-item {$activeView === item.id && !$activeProjectId ? 'active' : ''}"
+          class="nav-item {isNavActive(item.id) ? 'active' : ''}"
+          class:today-droppable={item.id === 'today' && $draggingTodoId}
+          class:today-dropover={item.id === 'today' && $dragOverToday}
+          data-drop-today={item.id === 'today' ? '' : undefined}
           onclick={() => navMain(item.id)}
           title={sidebarCollapsed ? item.label : ''}
         >
@@ -258,7 +280,7 @@
     </div>
     <div class="drawer-nav">
       {#each navItems as item}
-        <button class="drawer-item {$activeView === item.id && !$activeProjectId ? 'active' : ''}" onclick={() => navTo(item.id)}>
+        <button class="drawer-item {isNavActive(item.id) ? 'active' : ''}" onclick={() => navTo(item.id)}>
           {@html item.svg()}
           <span>{item.label}</span>
         </button>
@@ -361,6 +383,8 @@
   }
   .nav-item:hover { background: var(--border); color: var(--text-2); }
   .nav-item.active { background: var(--accent-bg); color: var(--accent); }
+  .nav-item.today-droppable { outline: 1px dashed var(--accent); outline-offset: -2px; }
+  .nav-item.today-dropover { background: var(--accent); color: #fff; outline-color: transparent; }
   .sidebar.collapsed .nav-item { justify-content: center; padding: 10px; gap: 0; }
 
   /* Quick-jump to the running task — green to match the live timer bar. */

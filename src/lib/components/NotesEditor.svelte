@@ -231,6 +231,65 @@
     }, true);
   }
 
+  // A second toolbar item (beside the built-in `<>`) that inserts a full code block.
+  // The `<>` button makes a single-line code block (rendered compact by the deco);
+  // this one adds a trailing newline so the block renders as a full box — and that
+  // newline persists in the markdown, so it stays a box across save/reload.
+  const CODEBOX_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><polyline points="9 9.5 7 12 9 14.5"/><polyline points="15 9.5 17 12 15 14.5"/></svg>`;
+
+  function insertCodeBlockFull(editorInstance: Crepe) {
+    editorInstance.editor.action((ctx) => {
+      const commands = ctx.get(commandsCtx);
+      commands.call(setBlockTypeCommand.key, { nodeType: codeBlockSchema.type(ctx) });
+    });
+    editorInstance.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const cbType = codeBlockSchema.type(ctx);
+      const { state } = view;
+      const parent = state.selection.$from.parent;
+      if (parent.type === cbType && !parent.textContent.includes('\n')) {
+        view.dispatch(state.tr.insertText('\n', state.selection.$from.end()));
+      }
+    });
+  }
+
+  // Milkdown rebuilds the selection toolbar on each selection, so re-inject the
+  // button whenever a `.toolbar` appears. Cloning the `<>` item keeps the styling.
+  function installCodeBoxButton(editorInstance: Crepe): () => void {
+    function inject() {
+      document.querySelectorAll<HTMLElement>('.milkdown-toolbar').forEach((tb) => {
+        if (tb.querySelector('.codebox-item')) return;
+        const items = Array.from(tb.querySelectorAll<HTMLElement>('.toolbar-item'));
+        if (items.length === 0) return;
+        const btn = items[items.length - 1].cloneNode(true) as HTMLElement;
+        btn.classList.add('codebox-item');
+        btn.title = 'Code block';
+        btn.innerHTML = CODEBOX_SVG;
+        btn.addEventListener('pointerdown', (e) => {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+          insertCodeBlockFull(editorInstance);
+        }, true);
+        tb.appendChild(btn);
+      });
+    }
+    // Crepe's selection toolbar can render outside the editor root and is rebuilt on
+    // selection, so watch the whole document but only act on toolbar-related changes.
+    const obs = new MutationObserver((muts) => {
+      for (const m of muts) {
+        for (const n of m.addedNodes) {
+          if (n instanceof HTMLElement && (n.matches('.milkdown-toolbar') || n.querySelector('.milkdown-toolbar') || n.closest('.milkdown-toolbar'))) {
+            inject();
+            return;
+          }
+        }
+      }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+    inject();
+    return () => obs.disconnect();
+  }
+
   const singleLineDecoKey = new PluginKey('single-line-deco');
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -388,6 +447,7 @@
     let instance: Crepe | null = null;
     let destroyed = false;
     let removeFloatBtn: (() => void) | null = null;
+    let removeCodeBox: (() => void) | null = null;
 
     function headingKeyHandler(e: KeyboardEvent) {
       if (!e.ctrlKey) return;
@@ -507,6 +567,7 @@
         removeFloatBtn = attachCodeCopyButtons(pm);
       }
       patchToolbarCodeButton(c, el);
+      removeCodeBox = installCodeBoxButton(c);
       c.editor.action((ctx) => { installSingleLineDecoPlugin(ctx); });
       notesEditorLoading = false; // clear AFTER plugin install which may fire markdownUpdated
 
@@ -521,6 +582,7 @@
         destroyed = true;
         captionObs.disconnect();
         removeFloatBtn?.();
+        removeCodeBox?.();
         el.removeEventListener('keydown', headingKeyHandler, true);
         el.removeEventListener('paste', handlePaste, true);
         notesEditorInstance = null;

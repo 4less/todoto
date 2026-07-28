@@ -878,11 +878,6 @@
                     {fmtDueLabel(todo.due_date)}
                   </span>
                 {/if}
-                {#if todo.notes}
-                  <span class="notes-indicator" title="Has notes">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                  </span>
-                {/if}
               </div>
             {/if}
             {#if isActive || isSelected}
@@ -925,10 +920,11 @@
                     </svg>
                   </button>
                 {/if}
-                <button class="task-action-btn {notesOpenId === todo.id ? 'active' : ''}" title="{notesOpenId === todo.id ? 'Close notes' : 'Open notes'}"
-                  onclick={() => notesOpenId === todo.id ? closeNotes() : openNotes(todo)}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                </button>
+                {#if !todo.notes}
+                  <button class="task-action-btn" title="Add notes" onclick={() => openNotes(todo)}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                  </button>
+                {/if}
                 <button class="task-action-btn" title="{copiedId === todo.id ? 'Copied!' : 'Copy as markdown'}" onclick={() => copyMarkdown(todo)}>
                   {#if copiedId === todo.id}
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -946,6 +942,24 @@
                 </button>
               </div>
               </div>
+            {/if}
+            {#if todo.notes}
+              <button
+                class="notes-btn {notesOpenId === todo.id ? 'active' : ''}"
+                title="{notesOpenId === todo.id ? 'Close notes' : 'Open notes'}"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  if (notesOpenId === todo.id) {
+                    closeNotes(); activeId = null;
+                    if (hasChildren) { const s = new Set(expandedChildren); s.delete(todo.id); expandedChildren = s; }
+                  } else {
+                    activeId = todo.id; openNotes(todo);
+                    if (hasChildren) { const s = new Set(expandedChildren); s.add(todo.id); expandedChildren = s; }
+                  }
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+              </button>
             {/if}
           {/if}
         </div>
@@ -1545,11 +1559,16 @@
     .sel-btn { padding: 6px 10px; font-size: 0.78rem; flex-shrink: 0; }
   }
 
-  /* Notes indicator on task card */
-  .notes-indicator {
-    display: flex; align-items: center;
-    color: var(--accent); opacity: 0.75; flex-shrink: 0;
+  /* Notes button on tasks that have notes — a square, tappable toggle. */
+  .notes-btn {
+    flex-shrink: 0; align-self: center;
+    width: 30px; height: 30px; border-radius: 8px; border: none;
+    background: var(--accent-bg); color: var(--accent-lt); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.12s, color 0.12s;
   }
+  .notes-btn:hover { background: var(--accent-bg-2); color: var(--accent-ltr); }
+  .notes-btn.active { background: var(--accent); color: #fff; }
 
   /* Task card with notes open — square bottom corners to connect to panel */
   .task-card.notes-open {

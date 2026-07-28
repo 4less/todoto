@@ -1,0 +1,1 @@
+Please move the progress bar to the right of the todo item. exchange the priority bar with a half circle that is anchored to the left

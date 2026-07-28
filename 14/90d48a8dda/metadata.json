@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "1490d48a8dda",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "src/lib/components/SettingsPanel.svelte",
+    "src/lib/components/TasksView.svelte",
+    "src/lib/stores.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/14/90d48a8dda/0/metadata.json",
+      "transcript": "/14/90d48a8dda/0/full.jsonl",
+      "compact_transcript": "/14/90d48a8dda/0/transcript.jsonl",
+      "content_hash": "/14/90d48a8dda/0/content_hash.txt",
+      "prompt": "/14/90d48a8dda/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 98,
+    "cache_creation_tokens": 67770,
+    "cache_read_tokens": 2756890,
+    "output_tokens": 22178,
+    "api_call_count": 52
+  }
+}

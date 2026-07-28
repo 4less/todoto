@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, taskShowTags, taskFilterToday, todaySelection, todayKey, draggingTodoId, dragOverToday, pinTodoToToday, settings, activeProject, activeProjectTags, focusRequest, projectApplyTick } from '$lib/stores';
+  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, taskShowTags, taskShowDividers, taskFilterToday, todaySelection, todayKey, draggingTodoId, dragOverToday, pinTodoToToday, settings, activeProject, activeProjectTags, focusRequest, projectApplyTick } from '$lib/stores';
   import { api } from '$lib/api';
   import type { Todo, WorkSession } from '$lib/types';
   import { serializeAnnotations } from '$lib/taskAnnotations';
@@ -789,7 +789,7 @@
         {@const childTimerHidden = hasChildren && !expandedChildren.has(todo.id) && $todos.some((t) => t.parent_id === todo.id && $activeTimers.has(t.id))}
 
         {@const hasNotes = notesOpenId === todo.id}
-        <div class="task-wrap {isChild ? 'child-wrap' : ''} {todo.done ? 'done' : ''} {isTimerActive || childTimerHidden ? 'wrap-timer' : ''} {isSelected ? 'wrap-selected' : ''} {isActive ? 'wrap-active' : ''} {hasNotes ? 'with-notes' : ''} {dropTargetId === todo.id ? 'drag-target' : ''} {pdrag?.id === todo.id ? 'dragging' : ''}"
+        <div class="task-wrap {isChild ? 'child-wrap' : ''} {$taskShowDividers ? '' : 'no-divider'} {todo.done ? 'done' : ''} {isTimerActive || childTimerHidden ? 'wrap-timer' : ''} {isSelected ? 'wrap-selected' : ''} {isActive ? 'wrap-active' : ''} {hasNotes ? 'with-notes' : ''} {dropTargetId === todo.id ? 'drag-target' : ''} {pdrag?.id === todo.id ? 'dragging' : ''}"
         data-todo-id={todo.id}>
         <div class="task-card" onmousedown={(e) => rowMouseDown(e, todo)}>
           {#if !isChild && todo.priority !== 'none'}
@@ -1137,7 +1137,7 @@
 <style>
 
   /* --pad-x insets the chrome (header/filters) while task rows stay full-bleed. */
-  .tasks { --pad-x: 24px; height: 100%; overflow-y: auto; padding: 24px 0 14px; display: flex; flex-direction: column; gap: 12px; background: var(--surface); }
+  .tasks { --pad-x: 24px; --row-h: 56px; height: 100%; overflow-y: auto; padding: 24px 0 14px; display: flex; flex-direction: column; gap: 12px; background: var(--surface); }
 
   .page-header { display: flex; justify-content: space-between; align-items: flex-start; padding: 0 var(--pad-x); }
   .header-actions { display: flex; align-items: center; gap: 8px; }
@@ -1288,6 +1288,8 @@
   }
   /* Subtask rows sit inside their parent — no divider or surface of their own. */
   .task-wrap.child-wrap { border-bottom: none; border-radius: 0; background: transparent; }
+  /* Dividers off (Settings → Appearance): keep the 1px so row heights don't shift. */
+  .task-wrap.no-divider { border-bottom-color: transparent; }
   /* While editing, let the row overflow so the date-picker calendar isn't clipped
      by the row's bounds (which are short when subtasks are collapsed). */
   .task-wrap:has(.edit-form) { overflow: visible; }
@@ -1318,15 +1320,24 @@
   .card-play-btn.stop { background: transparent; color: var(--red); border: 2px solid var(--red); box-shadow: none; }
   .card-play-btn.stop:hover { background: var(--red-bg); }
 
+  /* Every row is exactly --row-h tall, whatever it carries (tags, due date, the
+     action bar when clicked/selected). Content is clipped rather than allowed to
+     grow the row, so the list keeps a steady rhythm. */
   .task-card {
     position: relative;
     background: transparent; border: none; border-radius: 0;
-    padding: 13px var(--pad-x); display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    box-sizing: border-box; height: var(--row-h, 56px); overflow: hidden;
+    padding: 0 var(--pad-x); display: flex; align-items: center; gap: 12px; flex-wrap: nowrap;
   }
-  /* Priority shown as a colour bar flush against the row's left edge. */
-  .prio-edge { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; z-index: 0; }
-  /* Subtask rows sit tighter than their inset parent. */
-  .children-zone .task-card { padding: 7px 10px; }
+  /* The edit form is the one thing taller than a row — let it size itself. */
+  .task-card:has(.edit-form) { height: auto; overflow: visible; padding: 13px var(--pad-x); }
+  /* Priority shown as a colour half-circle anchored to the row's left edge. */
+  .prio-edge {
+    position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+    width: 8px; height: 16px; border-radius: 0 999px 999px 0; z-index: 0;
+  }
+  /* Subtask rows are inset from their parent but keep the same row height. */
+  .children-zone .task-card { padding: 0 10px; }
 
   /* Action controls (focus / play / edit etc.) grouped so they can flow onto
      their own row when there isn't room for a substantial slice of the title. */
@@ -1339,11 +1350,14 @@
      always-present check button so the card size stays constant. */
   .child-wrap .check-btn { min-height: 40px; align-items: center; }
 
-  /* min-width keeps a "substantial" amount of title on the first line; once the
-     remaining space can't fit the action bar, the actions wrap to a new row. */
-  .task-body { flex: 1; min-width: 10rem; cursor: pointer; align-self: stretch; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
-  .task-title-row { display: flex; align-items: center; gap: 8px; }
-  .task-title { font-size: 0.95rem; font-weight: 400; color: var(--text-1); flex: 1; min-width: 0; word-break: break-word; }
+  /* Shrinks (rather than wrapping the actions onto a second line) so the row
+     height stays fixed; the title truncates when space runs out. */
+  .task-body { flex: 1; min-width: 0; cursor: pointer; align-self: stretch; overflow: hidden; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+  .task-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .task-title {
+    font-size: 0.95rem; font-weight: 400; color: var(--text-1); flex: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .task-wrap.done .task-title { text-decoration: line-through; color: var(--text-6); }
 
   .timer-running {
@@ -1352,7 +1366,10 @@
     font-family: monospace; letter-spacing: 0.03em; white-space: nowrap;
   }
 
-  .task-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  /* One line only — the row can't grow, so surplus meta is clipped. */
+  .task-meta { display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; overflow: hidden; min-width: 0; }
+  .task-meta > * { flex-shrink: 0; }
+  .task-meta:empty { display: none; }
 
   .time-chip {
     font-size: 0.75rem; padding: 0; background: transparent; border-radius: 0;
@@ -1393,9 +1410,10 @@
     font-size: 0.78rem; color: var(--text-5); white-space: nowrap;
   }
   .due-right.overdue { color: var(--red); }
-  /* Sits on the todo's bottom border — a thin, muted segment, not a floating bar. */
+  /* Sits on the todo's bottom border, flush with its right edge — a thin, muted
+     segment, not a floating bar. */
   .subprogress {
-    position: absolute; left: 10px; bottom: 0; z-index: 1;
+    position: absolute; right: 12px; bottom: 0; z-index: 1;
     width: 160px; max-width: calc(100% - 20px); height: 3px;
     border-radius: 2px 2px 0 0; background: var(--border-2); overflow: hidden;
   }
@@ -1566,7 +1584,7 @@
   }
   /* Broken-out (notes-open) subtask: use a top-level row's padding so its checkbox
      and content align with the other tasks instead of the narrow subtask inset. */
-  .children-zone .child-task-wrap.child-expanded .task-card { padding: 13px var(--pad-x); }
+  .children-zone .child-task-wrap.child-expanded .task-card { padding: 0 var(--pad-x); }
   .children-zone .child-task-wrap.child-expanded .check-btn { min-height: 0; }
 
   /* The indented zone that wraps child cards */

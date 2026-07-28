@@ -76,6 +76,8 @@ export const taskFilterHideUngrouped = localStore<boolean>('todoto-filter-hide-u
 // Whether tags/labels are shown on todo rows in their unselected/inactive state.
 // A clicked or selected task always shows its tags regardless of this setting.
 export const taskShowTags = localStore<boolean>('todoto-show-tags', true);
+// Hairline dividers between todo rows. Off gives a cleaner, borderless list.
+export const taskShowDividers = localStore<boolean>('todoto-show-dividers', true);
 
 // Today's hand-picked workload: a date + the ids of todos selected for that day.
 // Todos are referenced by id only — they don't know they're picked. A stored date

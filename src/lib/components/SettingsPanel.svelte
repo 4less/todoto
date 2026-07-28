@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { settings, showSettings, syncState, theme } from '$lib/stores';
+  import { settings, showSettings, syncState, theme, taskShowDividers } from '$lib/stores';
   import { api } from '$lib/api';
   import type { Settings } from '$lib/types';
 
@@ -89,6 +89,12 @@
             </button>
           {/each}
         </div>
+      </div>
+      <div class="toggle-row">
+        <label class="toggle-label" for="s-task-dividers">
+          <input id="s-task-dividers" type="checkbox" bind:checked={$taskShowDividers} class="checkbox" />
+          <span>Show dividers between tasks</span>
+        </label>
       </div>
     </section>
 

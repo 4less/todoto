@@ -1,0 +1,16 @@
+just install
+
+---
+
+<ide_opened_file>The user opened the file /home/joachim/git/4less/todoto/src/lib/components/TasksView.svelte in the IDE. This may or may not be related to the current task.</ide_opened_file>
+For thise that have notes, please increase the the size of the notes icon, and give it a quadratic background color. if clicked there, the note gets selected and notes are opened. A click again closes the note and deselects the todo
+
+---
+
+<ide_opened_file>The user opened the file /home/joachim/git/4less/todoto/src/lib/components/TasksView.svelte in the IDE. This may or may not be related to the current task.</ide_opened_file>
+Its fine like this
+
+---
+
+<ide_opened_file>The user opened the file /home/joachim/git/4less/todoto/src/lib/components/TasksView.svelte in the IDE. This may or may not be related to the current task.</ide_opened_file>
+No I liked it better the way before with the cute rounded rectangle background. I said I like ti why dod you change it

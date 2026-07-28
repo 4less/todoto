@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "b8000c961606",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "src/lib/components/TasksView.svelte"
+  ],
+  "sessions": [
+    {
+      "metadata": "/b8/000c961606/0/metadata.json",
+      "transcript": "/b8/000c961606/0/full.jsonl",
+      "compact_transcript": "/b8/000c961606/0/transcript.jsonl",
+      "content_hash": "/b8/000c961606/0/content_hash.txt",
+      "prompt": "/b8/000c961606/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3916,
+    "cache_creation_tokens": 2773134,
+    "cache_read_tokens": 105235532,
+    "output_tokens": 501212,
+    "api_call_count": 302
+  }
+}

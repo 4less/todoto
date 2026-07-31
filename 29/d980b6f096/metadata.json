@@ -1,0 +1,45 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "29d980b6f096",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 12,
+  "files_touched": [
+    "src-tauri/src/lib.rs",
+    "src/lib/backend/idb.ts",
+    "src/lib/backend/interface.ts",
+    "src/lib/backend/tauri.ts",
+    "src/lib/components/DocsView.svelte",
+    "src/lib/components/LinkPicker.svelte",
+    "src/lib/components/LinkedText.svelte",
+    "src/lib/components/MentionHost.svelte",
+    "src/lib/components/NotesEditor.svelte",
+    "src/lib/components/TagInput.svelte",
+    "src/lib/components/TagManager.svelte",
+    "src/lib/components/TasksView.svelte",
+    "src/lib/components/WhiteboardView.svelte",
+    "src/lib/links.ts",
+    "src/lib/mentions.ts",
+    "src/lib/milkdownLinks.ts",
+    "src/lib/stores.ts",
+    "src/lib/tags.ts",
+    "src/lib/types.ts",
+    "src/routes/+page.svelte"
+  ],
+  "sessions": [
+    {
+      "metadata": "/29/d980b6f096/0/metadata.json",
+      "transcript": "/29/d980b6f096/0/full.jsonl",
+      "compact_transcript": "/29/d980b6f096/0/transcript.jsonl",
+      "content_hash": "/29/d980b6f096/0/content_hash.txt",
+      "prompt": "/29/d980b6f096/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 248,
+    "cache_creation_tokens": 179422,
+    "cache_read_tokens": 36395306,
+    "output_tokens": 133977,
+    "api_call_count": 111
+  }
+}

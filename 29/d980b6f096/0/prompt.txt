@@ -1,0 +1,72 @@
+We need some more conceptual changes. I would say the fundamental items are
+
+---
+
+asd
+
+---
+
+asd
+
+---
+
+asd
+
+---
+
+Multiline here does not work in claude terminal
+
+---
+
+on linux?
+
+---
+
+Ah i got it
+The fundamental items are Note, Todo, Board (Board might change in future)
+
+---
+
+Next, tags should become canonical, not just strings. Implement a system where different tags can be unified, as in if I write ProtalDev or protal_dev they are the same. However that should be based on manual curation, so there would need to be an interface to curate tags. Further, when writing tags there should be autocompletion for tasks and notes, on the other hand, it should be clear when a new tag would be created.
+
+---
+
+You did not implement the @ linking to notes todos and boards? If I write @ anywhere, a suggestion should pop up that can either be clicked or activated with enter. This opens a new window where all boards notes and todos can be searched by content, title, and tag (all activated, selectable by dropdown) . Multipüle of those can be selected then and with enter the link is done. Each linked resource gets their own @id
+
+---
+
+If a link is there, please highlight the linked part in the text, then when clicking on it, open up the item.
+
+---
+
+Add it. In raw its not that useful, its way more useful in the qwysiwig editor
+
+---
+
+When the tag search opens, oimmediately put keyboard focus into the search panel
+
+---
+
+[plugin:vite:css] [postcss] /home/joachim/git/4less/todoto/src/lib/components/WhiteboardView.svelte?svelte&type=style&lang.css:2:12: Unknown word whiteboards,
+/home/joachim/git/4less/todoto/src/lib/components/WhiteboardView.svelte:2:11
+1  |  <script lang="ts">
+2  |    import { whiteboards, openWhiteboardId } from '$lib/stores';
+   |             ^
+3  |    import { api } from '$lib/api';
+4  |    import type { Whiteboard, BoardNode, BoardEdge, BoardNodeKind } from '$lib/types';
+    at Input.error (/home/joachim/git/4less/todoto/node_modules/postcss/lib/input.js:135:16)
+    at Parser.unknownWord (/home/joachim/git/4less/todoto/node_modules/postcss/lib/parser.js:602:22)
+    at Parser.other (/home/joachim/git/4less/todoto/node_modules/postcss/lib/parser.js:444:12)
+    at Parser.parse (/home/joachim/git/4less/todoto/node_modules/postcss/lib/parser.js:479:16)
+    at parse (/home/joachim/git/4less/todoto/node_modules/postcss/lib/parse.js:11:12)
+    at new LazyResult (/home/joachim/git/4less/todoto/node_modules/postcss/lib/lazy-result.js:165:16)
+    at Processor.process (/home/joachim/git/4less/todoto/node_modules/postcss/lib/processor.js:53:14)
+    at runPostCSS (file:///home/joachim/git/4less/todoto/node_modules/vite/dist/node/chunks/dep-Dq2t6Dq0.js:43878:52)
+    at async compilePostCSS (file:///home/joachim/git/4less/todoto/node_modules/vite/dist/node/chunks/dep-Dq2t6Dq0.js:43848:18)
+    at async compileCSS (file:///home/joachim/git/4less/todoto/node_modules/vite/dist/node/chunks/dep-Dq2t6Dq0.js:43703:27
+Click outside, press Esc key, or fix the code to dismiss.
+You can also disable this overlay by setting server.hmr.overlay to false in vite.config.js.
+
+---
+
+The  @ does not work

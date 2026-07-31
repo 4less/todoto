@@ -6,7 +6,7 @@
   import { notes, todos, settings, activeView, showSettings, syncState, diskFolders, theme,
     projects, activeProjectId, taskFilterTag, taskFilterGroupByTags, taskFilterHideUngrouped,
     taskFilterToday, draggingTodoId, dragOverToday, activeTimers, focusRequest, projectApplyTick,
-    whiteboards, openWhiteboardId } from '$lib/stores';
+    whiteboards, openWhiteboardId, tags, showTagManager } from '$lib/stores';
   import type { Project } from '$lib/types';
   import HomeView from '$lib/components/HomeView.svelte';
   import TasksView from '$lib/components/TasksView.svelte';
@@ -16,6 +16,8 @@
   import SyncIndicator from '$lib/components/SyncIndicator.svelte';
   import ProjectsNav from '$lib/components/ProjectsNav.svelte';
   import WhiteboardView from '$lib/components/WhiteboardView.svelte';
+  import TagManager from '$lib/components/TagManager.svelte';
+  import MentionHost from '$lib/components/MentionHost.svelte';
 
   let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
   let loading = $state(true);
@@ -93,13 +95,14 @@
 
   // ── Data loading ──────────────────────────────────────────────────────────
   async function loadAll() {
-    const [n, t, s, f, p, w] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings(), api.getFolders(), api.getProjects(), api.getWhiteboards()]);
+    const [n, t, s, f, p, w, g] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings(), api.getFolders(), api.getProjects(), api.getWhiteboards(), api.getTags()]);
     notes.set(n);
     todos.set(t);
     settings.set(s);
     diskFolders.set(f);
     projects.set(p);
     whiteboards.set(w);
+    tags.set(g);
     const lastSync = await api.getLastSync();
     syncState.update((st) => ({ ...st, lastSync }));
     scheduleAutoSync(s.auto_sync, s.sync_interval_seconds);
@@ -130,8 +133,8 @@
     syncState.update((s) => ({ ...s, syncing: true }));
     try {
       const result = await api.syncNow();
-      const [n, t, f, p, w] = await Promise.all([api.getNotes(), api.getTodos(), api.getFolders(), api.getProjects(), api.getWhiteboards()]);
-      notes.set(n); todos.set(t); diskFolders.set(f); projects.set(p);
+      const [n, t, f, p, w, g] = await Promise.all([api.getNotes(), api.getTodos(), api.getFolders(), api.getProjects(), api.getWhiteboards(), api.getTags()]);
+      notes.set(n); todos.set(t); diskFolders.set(f); projects.set(p); tags.set(g);
       // An open board is being edited right now — adopting the just-synced copy
       // would clobber unsaved local moves, so leave the store alone until it closes.
       if (!get(openWhiteboardId)) whiteboards.set(w);
@@ -239,6 +242,11 @@
 
     <div class="sidebar-footer">
       <SyncIndicator onSync={triggerSync} collapsed={sidebarCollapsed} />
+      <button class="settings-btn" onclick={() => showTagManager.set(true)}
+        title={sidebarCollapsed ? 'Tags' : ''}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+        {#if !sidebarCollapsed}Tags{/if}
+      </button>
       <button class="settings-btn" onclick={() => showSettings.set(true)}
         title={sidebarCollapsed ? 'Settings' : ''}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -309,6 +317,10 @@
       <ProjectsNav collapsed={false} onApply={applyProject} />
     </div>
     <div class="drawer-footer">
+      <button class="drawer-item" onclick={() => { showTagManager.set(true); closeDrawer(); }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+        <span>Tags</span>
+      </button>
       <button class="drawer-item" onclick={() => { showSettings.set(true); closeDrawer(); }}>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         <span>Settings</span>
@@ -319,6 +331,13 @@
   {#if $showSettings}
     <SettingsPanel onSaved={loadAll} />
   {/if}
+
+  {#if $showTagManager}
+    <TagManager />
+  {/if}
+
+  <!-- Renders the "@" suggestion and link picker for every field that opts in. -->
+  <MentionHost />
 
   <div class="splash {loading ? '' : 'done'}">
     <div class="splash-content">

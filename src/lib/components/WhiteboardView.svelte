@@ -3,6 +3,8 @@
   import { api } from '$lib/api';
   import type { Whiteboard, BoardNode, BoardEdge, BoardNodeKind } from '$lib/types';
   import { BOARD_COLORS, boardColor, DEFAULT_STICKY_COLOR, DEFAULT_RECT_COLOR } from '$lib/boardColors';
+  import { attachMention } from '$lib/mentions';
+  import LinkedText from '$lib/components/LinkedText.svelte';
 
   let { boardId }: { boardId: string } = $props();
 
@@ -771,13 +773,14 @@
               <textarea
                 class="node-text editing"
                 autofocus
+                use:attachMention
                 value={node.text}
                 oninput={(e) => setNodeText(node.id, (e.currentTarget as HTMLTextAreaElement).value)}
                 onblur={() => { if (editingNodeId === node.id) editingNodeId = null; }}
                 onpointerdown={(e) => e.stopPropagation()}
               ></textarea>
             {:else}
-              <div class="node-text">{node.text}</div>
+              <div class="node-text"><LinkedText text={node.text} /></div>
               {#if !node.text}<div class="node-placeholder">Double-click to edit</div>{/if}
             {/if}
 

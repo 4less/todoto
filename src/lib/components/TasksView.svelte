@@ -7,6 +7,11 @@
   import DatePicker from '$lib/components/DatePicker.svelte';
   import NotesEditor from '$lib/components/NotesEditor.svelte';
   import WhiteboardStrip from '$lib/components/WhiteboardStrip.svelte';
+  import TagInput from '$lib/components/TagInput.svelte';
+  import { tags as tagRegistry } from '$lib/stores';
+  import { canonicalizeAll } from '$lib/tags';
+  import { attachMention } from '$lib/mentions';
+  import LinkedText from '$lib/components/LinkedText.svelte';
 
   // ── Filter state (persisted in global stores) ─────────────────────────────
   let showFilters = $state(false);
@@ -17,14 +22,14 @@
   let newTitle = $state('');
   let newPriority: 'none' | 'high' | 'medium' | 'low' = $state('none');
   let newDue = $state('');
-  let newTagInput = $state('');
+  let newTags = $state<string[]>([]);
 
   // ── Edit state ────────────────────────────────────────────────────────────
   let editId: string | null = $state(null);
   let editTitle = $state('');
   let editPriority: 'none' | 'high' | 'medium' | 'low' = $state('none');
   let editDue = $state('');
-  let editTagInput = $state('');
+  let editTags = $state<string[]>([]);
 
   // ── Selection state ───────────────────────────────────────────────────────
   let selectedIds: Set<string> = $state(new Set());
@@ -380,16 +385,15 @@
 
   async function createTodo() {
     if (!newTitle.trim()) return;
-    const typedTags = newTagInput.split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim()).filter(Boolean);
     // Tasks created inside a project automatically carry its tags, so they stay in scope.
-    const tags = [...new Set([...$activeProjectTags, ...typedTags])];
+    const tags = canonicalizeAll([...$activeProjectTags, ...newTags], $tagRegistry);
     const created = await api.saveTodo({
       id: '', title: newTitle.trim(), done: false, priority: newPriority,
       due_date: newDue || null, tags,
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     });
     todos.update((ts) => [created, ...ts]);
-    newTitle = ''; newPriority = 'none'; newDue = ''; newTagInput = '';
+    newTitle = ''; newPriority = 'none'; newDue = ''; newTags = [];
     showForm = false;
   }
 
@@ -413,12 +417,12 @@
     editTitle = todo.title;
     editPriority = todo.priority;
     editDue = todo.due_date ?? '';
-    editTagInput = todo.tags.join(', ');
+    editTags = [...todo.tags];
     selectedIds = new Set();
   }
 
   async function saveEdit(todo: Todo) {
-    const tags = editTagInput.split(/[\s,]+/).map((t) => t.replace(/^#/, '').trim()).filter(Boolean);
+    const tags = canonicalizeAll(editTags, $tagRegistry);
     const updated = await api.saveTodo({
       ...todo, title: editTitle.trim(), priority: editPriority,
       due_date: editDue || null, tags,
@@ -697,8 +701,9 @@
   {#if showForm}
     <div class="new-task-form">
       <input
-        class="input" placeholder="Task title…" bind:value={newTitle}
+        class="input" placeholder="Task title… (@ to link)" bind:value={newTitle}
         onkeydown={(e) => e.key === 'Enter' && createTodo()}
+        use:attachMention
         autofocus
       />
       <div class="form-row">
@@ -709,7 +714,7 @@
           <option value="low">Low priority</option>
         </select>
         <DatePicker bind:value={newDue} placeholder="Due date" />
-        <input class="input" placeholder="#tags (space/comma separated)" bind:value={newTagInput} />
+        <TagInput bind:value={newTags} locked={$activeProjectTags} placeholder="#tags — type to search, Enter to add" />
       </div>
       <div class="form-actions">
         <button class="btn-primary" onclick={createTodo}>Add task</button>
@@ -803,7 +808,7 @@
           {/if}
           {#if editId === todo.id}
             <div class="edit-form">
-              <input class="input" bind:value={editTitle} onkeydown={(e) => e.key === 'Enter' && saveEdit(todo)} />
+              <input class="input" bind:value={editTitle} use:attachMention onkeydown={(e) => e.key === 'Enter' && saveEdit(todo)} />
               <div class="form-row">
                 <select class="select" bind:value={editPriority}>
                   <option value="none">No priority</option>
@@ -812,7 +817,7 @@
                   <option value="low">Low</option>
                 </select>
                 <DatePicker bind:value={editDue} placeholder="Due date" />
-                <input class="input" placeholder="#tags" bind:value={editTagInput} />
+                <TagInput bind:value={editTags} placeholder="#tags" />
               </div>
               <div class="form-actions">
                 <button class="btn-primary" onclick={() => saveEdit(todo)}>Save</button>
@@ -846,7 +851,7 @@
               }}
               ondblclick={() => notesOpenId === todo.id ? closeNotes() : openNotes(todo)}>
               <div class="task-title-row">
-                <span class="task-title" ondblclick={(e) => { e.stopPropagation(); startEdit(todo); }} title="Double-click to edit">{todo.title}</span>
+                <span class="task-title" ondblclick={(e) => { e.stopPropagation(); startEdit(todo); }} title="Double-click to edit"><LinkedText text={todo.title} inline /></span>
                 {#if isTimerActive && timerStartMs !== undefined && !isActive && !isSelected}
                   <span class="timer-running">{formatElapsed(timerStartMs)}</span>
                 {/if}

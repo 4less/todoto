@@ -7,6 +7,8 @@
   import { Plugin, PluginKey, TextSelection, NodeSelection } from '@milkdown/kit/prose/state';
   import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
   import { api, saveTaskNoteImage } from '$lib/api';
+  import { installLinkPlugin } from '$lib/milkdownLinks';
+  import { attachMention } from '$lib/mentions';
   import type { Todo, CommitInfo } from '$lib/types';
 
   let {
@@ -568,7 +570,7 @@
       }
       patchToolbarCodeButton(c, el);
       removeCodeBox = installCodeBoxButton(c);
-      c.editor.action((ctx) => { installSingleLineDecoPlugin(ctx); });
+      c.editor.action((ctx) => { installSingleLineDecoPlugin(ctx); installLinkPlugin(ctx); });
       notesEditorLoading = false; // clear AFTER plugin install which may fire markdownUpdated
 
       el.addEventListener('paste', handlePaste, true);
@@ -687,6 +689,7 @@
       bind:value={notesContent}
       oninput={scheduleNotesSave}
       spellcheck={false}
+      use:attachMention
       use:autoResizeTextarea
     ></textarea>
   {/if}

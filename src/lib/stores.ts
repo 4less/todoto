@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import type { Note, Todo, Settings, SyncResult, View, Project, Whiteboard } from './types';
+import type { Note, Todo, Settings, SyncResult, View, Project, Whiteboard, Tag } from './types';
 
 function localStore<T>(key: string, initial: T) {
   const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
@@ -38,6 +38,13 @@ export const activeProject = derived(
   ([$projects, $id]) => ($id ? $projects.find((p) => p.id === $id) ?? null : null)
 );
 export const activeProjectTags = derived(activeProject, ($p) => $p?.tags ?? []);
+
+// Curated tag registry (synced via tags.json). Only holds tags the user has
+// actually curated — a tag that exists solely on items is still perfectly
+// usable, it just has no canonical spelling or aliases recorded for it yet.
+export const tags = writable<Tag[]>([]);
+// Whether the tag curation panel is open.
+export const showTagManager = writable(false);
 
 // Whiteboards (synced via whiteboards.json). Each board carries tags, so the set
 // shown under a project is the boards sharing at least one of the project's tags.

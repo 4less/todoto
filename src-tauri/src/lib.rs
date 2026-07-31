@@ -122,6 +122,27 @@ pub struct ProjectsData {
     pub updated_at: String,
 }
 
+// A curated tag. Items store `canonical`; `aliases` are other spellings the user
+// has manually declared equivalent. Case/separator variants are handled in the
+// frontend by key normalisation and never need an alias.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tag {
+    pub id: String,
+    pub canonical: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TagsData {
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
 // ── Whiteboard ────────────────────────────────────────────────────────────────
 // Free-form canvas of sticky notes / rectangles linked by arrows. Coordinates are
 // in board space; pan and zoom live in the frontend only.
@@ -350,6 +371,41 @@ fn save_projects_to_disk(settings: &Settings, projects: &[Project]) -> Result<()
     fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     let data = ProjectsData {
         projects: projects.to_vec(),
+        version: 1,
+        updated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+    };
+    let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+// ── Tag registry storage (tags.json, synced like projects.json) ───────────────
+
+fn tags_path(settings: &Settings) -> Option<PathBuf> {
+    if settings.repo_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&settings.repo_path).join("tags.json"))
+    }
+}
+
+fn load_tags(settings: &Settings) -> Vec<Tag> {
+    let Some(path) = tags_path(settings) else { return vec![] };
+    if path.exists() {
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<TagsData>(&s).ok())
+            .map(|d| d.tags)
+            .unwrap_or_default()
+    } else {
+        vec![]
+    }
+}
+
+fn save_tags_to_disk(settings: &Settings, tags: &[Tag]) -> Result<(), String> {
+    let path = tags_path(settings).ok_or("No repo path configured")?;
+    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let data = TagsData {
+        tags: tags.to_vec(),
         version: 1,
         updated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
     };
@@ -748,7 +804,12 @@ fn is_image_extension(ext: &str) -> bool {
 }
 
 fn is_synced_file(path: &str) -> bool {
-    if path.ends_with(".md") || path == "todos.json" || path == "projects.json" || path == "whiteboards.json" {
+    if path.ends_with(".md")
+        || path == "todos.json"
+        || path == "projects.json"
+        || path == "whiteboards.json"
+        || path == "tags.json"
+    {
         return true;
     }
     if let Some(ext) = path.rsplit('.').next() {
@@ -961,7 +1022,12 @@ fn scan_local_dir(dir: &Path, base: &Path, out: &mut HashMap<String, String>) {
         }
         if path.is_dir() {
             scan_local_dir(&path, base, out);
-        } else if path.extension().map_or(false, |e| e == "md") || name == "todos.json" || name == "projects.json" || name == "whiteboards.json" {
+        } else if path.extension().map_or(false, |e| e == "md")
+            || name == "todos.json"
+            || name == "projects.json"
+            || name == "whiteboards.json"
+            || name == "tags.json"
+        {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(rel) = path.strip_prefix(base) {
                     let rel_str = rel.to_string_lossy().replace('\\', "/");
@@ -1055,6 +1121,27 @@ async fn merge_whiteboards(
     let json = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
     let new_sha = gh_put_file(client, owner, repo, path, &json, Some(gh_sha)).await?;
     Ok((json, new_sha))
+}
+
+// Resolves a tags.json conflict by whole-file last-write-wins on updated_at.
+async fn merge_tags(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    path: &str,
+    gh_sha: &str,
+    local_content: &str,
+) -> Result<(String, String), String> {
+    let (remote_content, remote_sha) = gh_get_file(client, owner, repo, path).await?;
+    let local: TagsData = serde_json::from_str(local_content).unwrap_or_default();
+    let remote: TagsData = serde_json::from_str(&remote_content).unwrap_or_default();
+
+    if remote.updated_at > local.updated_at {
+        Ok((remote_content, remote_sha))
+    } else {
+        let new_sha = gh_put_file(client, owner, repo, path, local_content, Some(gh_sha)).await?;
+        Ok((local_content.to_string(), new_sha))
+    }
 }
 
 // Resolves a projects.json conflict by whole-file last-write-wins on updated_at.
@@ -1186,6 +1273,16 @@ async fn do_sync(settings: &Settings) -> SyncResult {
                 } else if github_changed && local_changed && path == "whiteboards.json" {
                     // Both sides changed on whiteboards.json → merge by board ID.
                     match merge_whiteboards(&client, &owner, &repo, path, gh_sha, content).await {
+                        Ok((merged, new_sha)) => {
+                            let _ = fs::write(repo_path.join(path), &merged);
+                            new_manifest.insert(path.clone(), new_sha);
+                            uploaded += 1;
+                        }
+                        Err(e) => errors.push(e),
+                    }
+                } else if github_changed && local_changed && path == "tags.json" {
+                    // Both sides changed on tags.json → whole-file newest-wins.
+                    match merge_tags(&client, &owner, &repo, path, gh_sha, content).await {
                         Ok((merged, new_sha)) => {
                             let _ = fs::write(repo_path.join(path), &merged);
                             new_manifest.insert(path.clone(), new_sha);
@@ -1517,6 +1614,18 @@ fn save_whiteboards(state: State<Mutex<AppState>>, whiteboards: Vec<Whiteboard>)
 }
 
 #[tauri::command]
+fn get_tags(state: State<Mutex<AppState>>) -> Vec<Tag> {
+    let state = state.lock().unwrap();
+    load_tags(&state.settings)
+}
+
+#[tauri::command]
+fn save_tags(state: State<Mutex<AppState>>, tags: Vec<Tag>) -> Result<(), String> {
+    let state = state.lock().unwrap();
+    save_tags_to_disk(&state.settings, &tags)
+}
+
+#[tauri::command]
 fn get_settings(state: State<Mutex<AppState>>) -> Settings {
     state.lock().unwrap().settings.clone()
 }
@@ -1772,6 +1881,8 @@ pub fn run() {
             save_projects,
             get_whiteboards,
             save_whiteboards,
+            get_tags,
+            save_tags,
             sync_now,
             get_last_sync,
             read_clipboard_image,

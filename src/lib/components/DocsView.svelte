@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { notes, todos, selectedNoteId, diskFolders } from '$lib/stores';
+  import { notes, todos, selectedNoteId, diskFolders, tags as tagRegistry } from '$lib/stores';
+  import TagInput from '$lib/components/TagInput.svelte';
+  import { canonicalizeAll } from '$lib/tags';
+  import { attachMention } from '$lib/mentions';
+  import { installLinkPlugin } from '$lib/milkdownLinks';
   import { api } from '$lib/api';
   import type { Note, CommitInfo } from '$lib/types';
   import { extractTasksFromMarkdown } from '$lib/taskAnnotations';
@@ -448,6 +452,15 @@
     }
   }
 
+  /** Persists a note's tags immediately — there's no draft state to hold them. */
+  async function saveNoteTags(next: string[]) {
+    if (!currentNote) return;
+    const tags = canonicalizeAll(next, $tagRegistry);
+    const updated = await api.saveNote({ ...currentNote, tags });
+    if (currentNote?.id === updated.id) currentNote = updated;
+    notes.update((ns) => ns.map((n) => (n.id === updated.id ? updated : n)));
+  }
+
   async function togglePin(note: Note) {
     const updated = await api.saveNote({ ...note, pinned: !note.pinned });
     notes.update((ns) => ns.map((n) => (n.id === updated.id ? updated : n)));
@@ -738,7 +751,7 @@
       if (pm instanceof HTMLElement) pm.style.paddingTop = '0';
       patchToolbarCodeButton(c, editorEl);
       removeCodeBox = installCodeBoxButton(c);
-      c.editor.action((ctx) => { installCodeBlockPlugin(ctx); });
+      c.editor.action((ctx) => { installCodeBlockPlugin(ctx); installLinkPlugin(ctx); });
       if (currentNote && currentMarkdown) {
         crepe.editor.action(replaceAll(makeImagesLoadable(currentMarkdown, currentNote.folder ?? '')));
       } else if ($notes.length > 0) {
@@ -1088,6 +1101,18 @@
       </div>
     {/if}
 
+    {#if currentNote}
+      <!-- Notes have always carried tags in their frontmatter; this is where
+           they finally become editable, sharing the tasks' autocomplete. -->
+      <div class="note-tags">
+        <TagInput
+          value={currentNote.tags ?? []}
+          placeholder="#tags for this note…"
+          onchange={saveNoteTags}
+        />
+      </div>
+    {/if}
+
     <div class="editor-body">
       <div class="editor-content">
         {#if historyMode && historySelectedSha}
@@ -1112,6 +1137,7 @@
         <textarea
           class="raw-editor"
           class:hidden={!currentNote || !rawMode || historyMode}
+          use:attachMention
           bind:value={currentMarkdown}
           oninput={() => { if (currentNote) scheduleSave(); }}
           spellcheck={false}
@@ -1304,6 +1330,13 @@
 
   /* ── Milkdown wrapper ── */
   /* Editor body — wraps content + optional history panel side-by-side */
+  /* Tag row sits between the title toolbar and the editor. Overflow stays
+     visible so the autocomplete menu can escape the row. */
+  .note-tags {
+    flex-shrink: 0; padding: 0 20px 10px;
+    position: relative; z-index: 20;
+  }
+
   .editor-body { flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden; }
   .editor-content { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
@@ -1391,6 +1424,25 @@
   }
   /* Ensure block-edit handle positions relative to the wrapper, not viewport */
   :global(.milkdown-wrapper .milkdown) { position: relative; }
+
+  /* Link tokens decorated by the ProseMirror plugin (src/lib/milkdownLinks.ts).
+     Global because decorations are rendered outside this component's scope. */
+  :global(.todoto-link) {
+    background: var(--accent-bg);
+    color: var(--accent-lt);
+    border-radius: 4px;
+    padding: 1px 4px;
+    cursor: pointer;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+  :global(.todoto-link:hover) { background: var(--accent-bg-2); }
+  :global(.todoto-link-note)  { background: var(--green-bg); color: var(--green); }
+  :global(.todoto-link-board) { background: var(--yellow-bg); color: var(--yellow); }
+  :global(.todoto-link-missing) {
+    background: var(--red-bg); color: var(--red);
+    text-decoration: line-through; cursor: default;
+  }
 
   .no-doc {
     flex: 1; display: flex; flex-direction: column; align-items: center;

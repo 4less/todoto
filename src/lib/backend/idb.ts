@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import type { Note, Todo, Settings, SyncResult, CommitInfo, Project, Whiteboard } from '../types';
+import type { Note, Todo, Settings, SyncResult, CommitInfo, Project, Whiteboard, Tag } from '../types';
 import type { ApiBackend } from './interface';
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────────
@@ -34,7 +34,18 @@ function dbGetAll<T>(db: IDBDatabase, store: string): Promise<T[]> {
   });
 }
 
+/**
+ * IndexedDB structured-clones what it stores, and Svelte 5 `$state` values are
+ * Proxies, which structured clone refuses — the write then rejects and the edit
+ * is silently lost. Everything here is plain JSON data, so round-tripping
+ * through JSON strips the proxies and any accidental non-clonable field.
+ */
+function plain<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 function dbPut(db: IDBDatabase, store: string, value: unknown): Promise<void> {
+  value = plain(value);
   return new Promise((resolve, reject) => {
     const tx = db.transaction(store, 'readwrite');
     tx.objectStore(store).put(value);
@@ -56,7 +67,7 @@ function dbPutMany(db: IDBDatabase, store: string, items: unknown[]): Promise<vo
   return new Promise((resolve, reject) => {
     const tx = db.transaction(store, 'readwrite');
     const s = tx.objectStore(store);
-    for (const item of items) s.put(item);
+    for (const item of items) s.put(plain(item));
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -140,6 +151,33 @@ function writeWhiteboardsFile(file: WhiteboardsFile): void {
 
 function serializeWhiteboardsFile(file: WhiteboardsFile): string {
   return JSON.stringify({ whiteboards: file.whiteboards, version: 1 }, null, 2);
+}
+
+// ── Tag registry (synced via tags.json, whole-file last-write-wins) ──────────
+// Curation is deliberate and infrequent, so whole-file newest-wins is the right
+// granularity — the same treatment projects.json gets.
+
+const TAGS_KEY = 'todoto-idb-tags';
+
+interface TagsFile { tags: Tag[]; version: number; updated_at: string; }
+
+function loadTagsFile(): TagsFile {
+  try {
+    const s = localStorage.getItem(TAGS_KEY);
+    if (s) {
+      const parsed = JSON.parse(s);
+      return { tags: parsed.tags ?? [], version: 1, updated_at: parsed.updated_at ?? '' };
+    }
+  } catch {}
+  return { tags: [], version: 1, updated_at: '' };
+}
+
+function writeTagsFile(file: TagsFile): void {
+  localStorage.setItem(TAGS_KEY, JSON.stringify(file));
+}
+
+function serializeTagsFile(file: TagsFile): string {
+  return JSON.stringify({ tags: file.tags, version: 1, updated_at: file.updated_at }, null, 2);
 }
 
 // ── GitHub API helpers ────────────────────────────────────────────────────────
@@ -250,7 +288,7 @@ async function ghListTree(
   const data = await res.json();
   const map = new Map<string, string>();
   for (const item of data.tree) {
-    if (item.type === 'blob' && (item.path.endsWith('.md') || item.path === 'todos.json' || item.path === 'projects.json' || item.path === 'whiteboards.json')) {
+    if (item.type === 'blob' && (item.path.endsWith('.md') || item.path === 'todos.json' || item.path === 'projects.json' || item.path === 'whiteboards.json' || item.path === 'tags.json')) {
       map.set(item.path, item.sha);
     }
   }
@@ -364,6 +402,7 @@ async function syncToGitHub(settings: Settings, db: IDBDatabase): Promise<void> 
   await addIfChanged('todos.json', serializeTodos(todos));
   await addIfChanged('projects.json', serializeProjectsFile(loadProjectsFile()));
   await addIfChanged('whiteboards.json', serializeWhiteboardsFile(loadWhiteboardsFile()));
+  await addIfChanged('tags.json', serializeTagsFile(loadTagsFile()));
 
   for (const todo of todos) {
     if (todo.notes != null && todo.notes.trim() !== '') {
@@ -449,6 +488,20 @@ async function pullFromGitHub(settings: Settings, db: IDBDatabase): Promise<bool
         const local = loadProjectsFile();
         if ((remote.updated_at ?? '') > (local.updated_at ?? '')) {
           writeProjectsFile({ projects: remote.projects ?? [], version: 1, updated_at: remote.updated_at ?? '' });
+        }
+      } catch {}
+    }
+  }
+
+  // Tag registry: whole-file last-write-wins, like projects.
+  if (tree.has('tags.json')) {
+    const raw = await ghGet(owner, repo, token, 'tags.json');
+    if (raw) {
+      try {
+        const remote = JSON.parse(raw.content) as TagsFile;
+        const local = loadTagsFile();
+        if ((remote.updated_at ?? '') > (local.updated_at ?? '')) {
+          writeTagsFile({ tags: remote.tags ?? [], version: 1, updated_at: remote.updated_at ?? '' });
         }
       } catch {}
     }
@@ -591,6 +644,12 @@ export const idbBackend: ApiBackend = {
 
   saveWhiteboards: async (whiteboards) => {
     writeWhiteboardsFile({ whiteboards, version: 1 });
+  },
+
+  getTags: async () => loadTagsFile().tags,
+
+  saveTags: async (tags) => {
+    writeTagsFile({ tags, version: 1, updated_at: new Date().toISOString() });
   },
 
   syncNow: async (): Promise<SyncResult> => {

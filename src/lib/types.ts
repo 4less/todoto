@@ -43,6 +43,18 @@ export interface Project {
   color: string; // hex colour
 }
 
+// ── Tags ─────────────────────────────────────────────────────────────────────
+// A curated tag. Items store the canonical spelling; `aliases` are other
+// spellings the user has manually declared to mean the same thing. Case and
+// separator differences ("ProtalDev" / "protal_dev") collapse automatically via
+// tagKey() and never need an alias — aliases are for genuinely different words
+// ("k8s" → "kubernetes") and typos, which are always a deliberate merge.
+export interface Tag {
+  id: string;
+  canonical: string;
+  aliases: string[];
+}
+
 // ── Whiteboard ───────────────────────────────────────────────────────────────
 // A free-form canvas of sticky notes and rectangles, optionally linked by arrows.
 // Coordinates are in board space (unzoomed); the view applies pan/zoom on top.

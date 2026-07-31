@@ -43,6 +43,39 @@ export interface Project {
   color: string; // hex colour
 }
 
+// ── Whiteboard ───────────────────────────────────────────────────────────────
+// A free-form canvas of sticky notes and rectangles, optionally linked by arrows.
+// Coordinates are in board space (unzoomed); the view applies pan/zoom on top.
+
+export type BoardNodeKind = 'sticky' | 'rect';
+
+export interface BoardNode {
+  id: string;
+  kind: BoardNodeKind;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  text: string;
+  color: string; // key into BOARD_COLORS
+}
+
+export interface BoardEdge {
+  id: string;
+  from: string; // BoardNode id
+  to: string;   // BoardNode id
+}
+
+export interface Whiteboard {
+  id: string;
+  name: string;
+  tags: string[];
+  nodes: BoardNode[];
+  edges: BoardEdge[];
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Settings {
   repo_path: string;
   repo_url: string;

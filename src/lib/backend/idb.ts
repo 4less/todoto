@@ -1,5 +1,5 @@
 import { v4 as uuid } from 'uuid';
-import type { Note, Todo, Settings, SyncResult, CommitInfo, Project } from '../types';
+import type { Note, Todo, Settings, SyncResult, CommitInfo, Project, Whiteboard } from '../types';
 import type { ApiBackend } from './interface';
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────────
@@ -120,6 +120,28 @@ function serializeProjectsFile(file: ProjectsFile): string {
   return JSON.stringify({ projects: file.projects, version: 1, updated_at: file.updated_at }, null, 2);
 }
 
+// ── Whiteboards (synced via whiteboards.json, merged per board by updated_at) ──
+
+const WHITEBOARDS_KEY = 'todoto-idb-whiteboards';
+
+interface WhiteboardsFile { whiteboards: Whiteboard[]; version: number; }
+
+function loadWhiteboardsFile(): WhiteboardsFile {
+  try {
+    const s = localStorage.getItem(WHITEBOARDS_KEY);
+    if (s) return { whiteboards: JSON.parse(s).whiteboards ?? [], version: 1 };
+  } catch {}
+  return { whiteboards: [], version: 1 };
+}
+
+function writeWhiteboardsFile(file: WhiteboardsFile): void {
+  localStorage.setItem(WHITEBOARDS_KEY, JSON.stringify(file));
+}
+
+function serializeWhiteboardsFile(file: WhiteboardsFile): string {
+  return JSON.stringify({ whiteboards: file.whiteboards, version: 1 }, null, 2);
+}
+
 // ── GitHub API helpers ────────────────────────────────────────────────────────
 
 function parseRepoUrl(url: string): { owner: string; repo: string } | null {
@@ -228,7 +250,7 @@ async function ghListTree(
   const data = await res.json();
   const map = new Map<string, string>();
   for (const item of data.tree) {
-    if (item.type === 'blob' && (item.path.endsWith('.md') || item.path === 'todos.json' || item.path === 'projects.json')) {
+    if (item.type === 'blob' && (item.path.endsWith('.md') || item.path === 'todos.json' || item.path === 'projects.json' || item.path === 'whiteboards.json')) {
       map.set(item.path, item.sha);
     }
   }
@@ -341,6 +363,7 @@ async function syncToGitHub(settings: Settings, db: IDBDatabase): Promise<void> 
 
   await addIfChanged('todos.json', serializeTodos(todos));
   await addIfChanged('projects.json', serializeProjectsFile(loadProjectsFile()));
+  await addIfChanged('whiteboards.json', serializeWhiteboardsFile(loadWhiteboardsFile()));
 
   for (const todo of todos) {
     if (todo.notes != null && todo.notes.trim() !== '') {
@@ -427,6 +450,22 @@ async function pullFromGitHub(settings: Settings, db: IDBDatabase): Promise<bool
         if ((remote.updated_at ?? '') > (local.updated_at ?? '')) {
           writeProjectsFile({ projects: remote.projects ?? [], version: 1, updated_at: remote.updated_at ?? '' });
         }
+      } catch {}
+    }
+  }
+
+  // Whiteboards: merged per board by updated_at, so a board edited on another
+  // device isn't lost when this one also has local changes.
+  if (tree.has('whiteboards.json')) {
+    const raw = await ghGet(owner, repo, token, 'whiteboards.json');
+    if (raw) {
+      try {
+        const remote = JSON.parse(raw.content) as WhiteboardsFile;
+        const local = loadWhiteboardsFile();
+        writeWhiteboardsFile({
+          whiteboards: mergeByUpdated(local.whiteboards, remote.whiteboards ?? []),
+          version: 1,
+        });
       } catch {}
     }
   }
@@ -546,6 +585,12 @@ export const idbBackend: ApiBackend = {
 
   saveProjects: async (projects) => {
     writeProjectsFile({ projects, version: 1, updated_at: new Date().toISOString() });
+  },
+
+  getWhiteboards: async () => loadWhiteboardsFile().whiteboards,
+
+  saveWhiteboards: async (whiteboards) => {
+    writeWhiteboardsFile({ whiteboards, version: 1 });
   },
 
   syncNow: async (): Promise<SyncResult> => {

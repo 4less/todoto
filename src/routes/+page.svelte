@@ -5,7 +5,8 @@
   import { api } from '$lib/api';
   import { notes, todos, settings, activeView, showSettings, syncState, diskFolders, theme,
     projects, activeProjectId, taskFilterTag, taskFilterGroupByTags, taskFilterHideUngrouped,
-    taskFilterToday, draggingTodoId, dragOverToday, activeTimers, focusRequest, projectApplyTick } from '$lib/stores';
+    taskFilterToday, draggingTodoId, dragOverToday, activeTimers, focusRequest, projectApplyTick,
+    whiteboards, openWhiteboardId } from '$lib/stores';
   import type { Project } from '$lib/types';
   import HomeView from '$lib/components/HomeView.svelte';
   import TasksView from '$lib/components/TasksView.svelte';
@@ -14,6 +15,7 @@
   import SettingsPanel from '$lib/components/SettingsPanel.svelte';
   import SyncIndicator from '$lib/components/SyncIndicator.svelte';
   import ProjectsNav from '$lib/components/ProjectsNav.svelte';
+  import WhiteboardView from '$lib/components/WhiteboardView.svelte';
 
   let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
   let loading = $state(true);
@@ -23,6 +25,7 @@
   function closeDrawer() { drawerOpen = false; }
   // Switching to a top-level view clears any applied project filter highlight.
   function navMain(id: typeof $activeView) {
+    openWhiteboardId.set(null);
     activeProjectId.set(null);
     // "Today" is a filtered Tasks view rather than its own page.
     if (id === 'today') { taskFilterToday.set(true); activeView.set('tasks'); return; }
@@ -45,6 +48,7 @@
 
   // Jump straight to a running ("live") task in focus mode, from anywhere in the app.
   function jumpToTaskFocus(id: string) {
+    openWhiteboardId.set(null);
     activeView.set('tasks');
     focusRequest.set(id);
     closeDrawer();
@@ -54,6 +58,7 @@
   // The project tags become a hard constraint (handled in TasksView), so we start
   // from a clean per-page filter — the user can then filter/group within the project.
   function applyProject(p: Project) {
+    openWhiteboardId.set(null);
     taskFilterTag.set('');
     taskFilterGroupByTags.set([]);
     taskFilterHideUngrouped.set(false);
@@ -88,12 +93,13 @@
 
   // ── Data loading ──────────────────────────────────────────────────────────
   async function loadAll() {
-    const [n, t, s, f, p] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings(), api.getFolders(), api.getProjects()]);
+    const [n, t, s, f, p, w] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings(), api.getFolders(), api.getProjects(), api.getWhiteboards()]);
     notes.set(n);
     todos.set(t);
     settings.set(s);
     diskFolders.set(f);
     projects.set(p);
+    whiteboards.set(w);
     const lastSync = await api.getLastSync();
     syncState.update((st) => ({ ...st, lastSync }));
     scheduleAutoSync(s.auto_sync, s.sync_interval_seconds);
@@ -124,8 +130,11 @@
     syncState.update((s) => ({ ...s, syncing: true }));
     try {
       const result = await api.syncNow();
-      const [n, t, f, p] = await Promise.all([api.getNotes(), api.getTodos(), api.getFolders(), api.getProjects()]);
+      const [n, t, f, p, w] = await Promise.all([api.getNotes(), api.getTodos(), api.getFolders(), api.getProjects(), api.getWhiteboards()]);
       notes.set(n); todos.set(t); diskFolders.set(f); projects.set(p);
+      // An open board is being edited right now — adopting the just-synced copy
+      // would clobber unsaved local moves, so leave the store alone until it closes.
+      if (!get(openWhiteboardId)) whiteboards.set(w);
       // Only advance lastSync on success — a failed attempt must not be shown as
       // the last sync time.
       syncState.update((s) => ({ syncing: false, lastResult: result, lastSync: result.success ? result.timestamp : s.lastSync }));
@@ -240,7 +249,10 @@
 
   <!-- Main content -->
   <main class="main">
-    {#if $activeView === 'home'}
+    {#if $openWhiteboardId}
+      <!-- An open board takes over the whole content area; only the menubar stays. -->
+      <WhiteboardView boardId={$openWhiteboardId} />
+    {:else if $activeView === 'home'}
       <HomeView onSync={triggerSync} />
     {:else if $activeView === 'tasks'}
       <TasksView />

@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import type { Note, Todo, Settings, SyncResult, View, Project } from './types';
+import type { Note, Todo, Settings, SyncResult, View, Project, Whiteboard } from './types';
 
 function localStore<T>(key: string, initial: T) {
   const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
@@ -38,6 +38,13 @@ export const activeProject = derived(
   ([$projects, $id]) => ($id ? $projects.find((p) => p.id === $id) ?? null : null)
 );
 export const activeProjectTags = derived(activeProject, ($p) => $p?.tags ?? []);
+
+// Whiteboards (synced via whiteboards.json). Each board carries tags, so the set
+// shown under a project is the boards sharing at least one of the project's tags.
+export const whiteboards = writable<Whiteboard[]>([]);
+// Id of the board opened full-screen, or null for the normal views. The open board
+// takes over the whole content area, leaving only the sidebar/menubar visible.
+export const openWhiteboardId = writable<string | null>(null);
 
 // Set to a todo id to ask the Tasks view to open that task in focus mode. The
 // Tasks view consumes and clears it. Lets the sidebar jump back to the running task.

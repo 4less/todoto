@@ -1,4 +1,4 @@
-import type { Note, Todo, Settings, SyncResult, CommitInfo, Project } from '../types';
+import type { Note, Todo, Settings, SyncResult, CommitInfo, Project, Whiteboard } from '../types';
 
 export interface ApiBackend {
   getNotes(): Promise<Note[]>;
@@ -15,6 +15,9 @@ export interface ApiBackend {
 
   getProjects(): Promise<Project[]>;
   saveProjects(projects: Project[]): Promise<void>;
+
+  getWhiteboards(): Promise<Whiteboard[]>;
+  saveWhiteboards(whiteboards: Whiteboard[]): Promise<void>;
 
   syncNow(): Promise<SyncResult>;
   getLastSync(): Promise<string | null>;

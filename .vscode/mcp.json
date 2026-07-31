@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "vexp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/home/joachim/.vscode/extensions/vexp.vexp-vscode-2.3.1-linux-x64/dist/mcp-server.cjs"
+      ],
+      "env": {
+        "VEXP_WORKSPACE": "/home/joachim/git/4less/todoto"
+      }
+    }
+  }
+}

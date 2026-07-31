@@ -6,6 +6,7 @@
   import { serializeAnnotations } from '$lib/taskAnnotations';
   import DatePicker from '$lib/components/DatePicker.svelte';
   import NotesEditor from '$lib/components/NotesEditor.svelte';
+  import WhiteboardStrip from '$lib/components/WhiteboardStrip.svelte';
 
   // ── Filter state (persisted in global stores) ─────────────────────────────
   let showFilters = $state(false);
@@ -655,6 +656,11 @@
       </button>
     </div>
   </header>
+
+  <!-- Whiteboards live under a project, alongside its tasks -->
+  {#if $activeProject && !focusMode}
+    <WhiteboardStrip />
+  {/if}
 
   <!-- Active filters — each chip removes that filter on click -->
   {#if hasActiveFilters}

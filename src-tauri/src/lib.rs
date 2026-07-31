@@ -122,6 +122,53 @@ pub struct ProjectsData {
     pub updated_at: String,
 }
 
+// ── Whiteboard ────────────────────────────────────────────────────────────────
+// Free-form canvas of sticky notes / rectangles linked by arrows. Coordinates are
+// in board space; pan and zoom live in the frontend only.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardNode {
+    pub id: String,
+    pub kind: String, // "sticky" | "rect"
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub color: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardEdge {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Whiteboard {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub nodes: Vec<BoardNode>,
+    #[serde(default)]
+    pub edges: Vec<BoardEdge>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WhiteboardsData {
+    #[serde(default)]
+    pub whiteboards: Vec<Whiteboard>,
+    #[serde(default)]
+    pub version: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LegacyAppData {
     #[serde(default)]
@@ -306,6 +353,37 @@ fn save_projects_to_disk(settings: &Settings, projects: &[Project]) -> Result<()
         version: 1,
         updated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
     };
+    let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+    fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+// ── Whiteboard storage (whiteboards.json, synced like todos.json) ─────────────
+
+fn whiteboards_path(settings: &Settings) -> Option<PathBuf> {
+    if settings.repo_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&settings.repo_path).join("whiteboards.json"))
+    }
+}
+
+fn load_whiteboards(settings: &Settings) -> Vec<Whiteboard> {
+    let Some(path) = whiteboards_path(settings) else { return vec![] };
+    if path.exists() {
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<WhiteboardsData>(&s).ok())
+            .map(|d| d.whiteboards)
+            .unwrap_or_default()
+    } else {
+        vec![]
+    }
+}
+
+fn save_whiteboards_to_disk(settings: &Settings, boards: &[Whiteboard]) -> Result<(), String> {
+    let path = whiteboards_path(settings).ok_or("No repo path configured")?;
+    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let data = WhiteboardsData { whiteboards: boards.to_vec(), version: 1 };
     let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())
 }
@@ -670,7 +748,7 @@ fn is_image_extension(ext: &str) -> bool {
 }
 
 fn is_synced_file(path: &str) -> bool {
-    if path.ends_with(".md") || path == "todos.json" || path == "projects.json" {
+    if path.ends_with(".md") || path == "todos.json" || path == "projects.json" || path == "whiteboards.json" {
         return true;
     }
     if let Some(ext) = path.rsplit('.').next() {
@@ -883,7 +961,7 @@ fn scan_local_dir(dir: &Path, base: &Path, out: &mut HashMap<String, String>) {
         }
         if path.is_dir() {
             scan_local_dir(&path, base, out);
-        } else if path.extension().map_or(false, |e| e == "md") || name == "todos.json" || name == "projects.json" {
+        } else if path.extension().map_or(false, |e| e == "md") || name == "todos.json" || name == "projects.json" || name == "whiteboards.json" {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(rel) = path.strip_prefix(base) {
                     let rel_str = rel.to_string_lossy().replace('\\', "/");
@@ -944,6 +1022,36 @@ async fn merge_todos(
     }
 
     let merged = TodoData { todos: by_id.into_values().collect(), version: 1 };
+    let json = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
+    let new_sha = gh_put_file(client, owner, repo, path, &json, Some(gh_sha)).await?;
+    Ok((json, new_sha))
+}
+
+// Merges local and remote whiteboards.json by ID, taking the newer board per ID.
+async fn merge_whiteboards(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    path: &str,
+    gh_sha: &str,
+    local_content: &str,
+) -> Result<(String, String), String> {
+    let (remote_content, _) = gh_get_file(client, owner, repo, path).await?;
+    let local_data: WhiteboardsData = serde_json::from_str(local_content).map_err(|e| e.to_string())?;
+    let remote_data: WhiteboardsData = serde_json::from_str(&remote_content).map_err(|e| e.to_string())?;
+
+    let mut by_id: HashMap<String, Whiteboard> =
+        remote_data.whiteboards.into_iter().map(|b| (b.id.clone(), b)).collect();
+    for board in local_data.whiteboards {
+        match by_id.get(&board.id) {
+            Some(existing) if existing.updated_at >= board.updated_at => {}
+            _ => {
+                by_id.insert(board.id.clone(), board);
+            }
+        }
+    }
+
+    let merged = WhiteboardsData { whiteboards: by_id.into_values().collect(), version: 1 };
     let json = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
     let new_sha = gh_put_file(client, owner, repo, path, &json, Some(gh_sha)).await?;
     Ok((json, new_sha))
@@ -1068,6 +1176,16 @@ async fn do_sync(settings: &Settings) -> SyncResult {
                 } else if github_changed && local_changed && path == "todos.json" {
                     // Both sides changed on todos.json → merge by ID.
                     match merge_todos(&client, &owner, &repo, path, gh_sha, content).await {
+                        Ok((merged, new_sha)) => {
+                            let _ = fs::write(repo_path.join(path), &merged);
+                            new_manifest.insert(path.clone(), new_sha);
+                            uploaded += 1;
+                        }
+                        Err(e) => errors.push(e),
+                    }
+                } else if github_changed && local_changed && path == "whiteboards.json" {
+                    // Both sides changed on whiteboards.json → merge by board ID.
+                    match merge_whiteboards(&client, &owner, &repo, path, gh_sha, content).await {
                         Ok((merged, new_sha)) => {
                             let _ = fs::write(repo_path.join(path), &merged);
                             new_manifest.insert(path.clone(), new_sha);
@@ -1387,6 +1505,18 @@ fn save_projects(state: State<Mutex<AppState>>, projects: Vec<Project>) -> Resul
 }
 
 #[tauri::command]
+fn get_whiteboards(state: State<Mutex<AppState>>) -> Vec<Whiteboard> {
+    let state = state.lock().unwrap();
+    load_whiteboards(&state.settings)
+}
+
+#[tauri::command]
+fn save_whiteboards(state: State<Mutex<AppState>>, whiteboards: Vec<Whiteboard>) -> Result<(), String> {
+    let state = state.lock().unwrap();
+    save_whiteboards_to_disk(&state.settings, &whiteboards)
+}
+
+#[tauri::command]
 fn get_settings(state: State<Mutex<AppState>>) -> Settings {
     state.lock().unwrap().settings.clone()
 }
@@ -1640,6 +1770,8 @@ pub fn run() {
             save_settings,
             get_projects,
             save_projects,
+            get_whiteboards,
+            save_whiteboards,
             sync_now,
             get_last_sync,
             read_clipboard_image,

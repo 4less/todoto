@@ -1,5 +1,5 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import type { Note, Todo, Settings, SyncResult, CommitInfo, Project } from '../types';
+import type { Note, Todo, Settings, SyncResult, CommitInfo, Project, Whiteboard } from '../types';
 import type { ApiBackend } from './interface';
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -37,6 +37,9 @@ export const tauriBackend: ApiBackend = {
 
   getProjects: () => invoke<Project[]>('get_projects'),
   saveProjects: (projects) => invoke<void>('save_projects', { projects }),
+
+  getWhiteboards: () => invoke<Whiteboard[]>('get_whiteboards'),
+  saveWhiteboards: (whiteboards) => invoke<void>('save_whiteboards', { whiteboards }),
 
   syncNow: () => invoke<SyncResult>('sync_now'),
   getLastSync: () => invoke<string | null>('get_last_sync'),

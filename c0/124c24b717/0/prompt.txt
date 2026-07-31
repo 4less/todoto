@@ -1,0 +1,13 @@
+Please develop a rudimentory digital whiteboard with resizable and colorable sticky notes, with rectangles with text and one can connect rectangles with arrows. there is zoom in and zoom out. Integrate the white board such as it also has tags it is associated with. Under a project, at the top you can select to create a new whiteboard. if you click on the whiteboard it fills the whole screen aside from the menubar. /goal
+
+---
+
+Double click to edit does not work. I can only edit it once in the beginning. Please fix
+
+---
+
+When I right click on the canvas, and left click outside to close the context window, the cursor is stuck on "Grab" mode to move the canvas until I click again. Fix this. Further, when pressing control when moving or resizing items, please activate a snap functionality with respect to the grid and nearby items regarding moving and resizing.
+
+---
+
+Please implement a simple undo redo system capturing content changes and movements of elements

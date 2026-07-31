@@ -1,0 +1,143 @@
+{
+  "cli_version": "0.8.42",
+  "checkpoint_id": "c0124c24b717",
+  "session_id": "0d69ca72-e954-4259-ad6e-0b3120b069c8",
+  "strategy": "manual-commit",
+  "created_at": "2026-07-31T10:51:15.192020571Z",
+  "branch": "main",
+  "checkpoints_count": 4,
+  "save_step_count": 4,
+  "files_touched": [
+    "src-tauri/src/lib.rs",
+    "src/lib/backend/idb.ts",
+    "src/lib/backend/interface.ts",
+    "src/lib/backend/tauri.ts",
+    "src/lib/boardColors.ts",
+    "src/lib/components/TasksView.svelte",
+    "src/lib/components/WhiteboardStrip.svelte",
+    "src/lib/components/WhiteboardView.svelte",
+    "src/lib/stores.ts",
+    "src/lib/types.ts",
+    "src/routes/+page.svelte"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-5",
+  "turn_id": "eaae8ce25d44",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 1640,
+    "cache_creation_tokens": 216442,
+    "cache_read_tokens": 15852252,
+    "output_tokens": 114187,
+    "api_call_count": 116
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "claude-skill-toolu_014puvrYfKzkgFZCme8Z3gXQ",
+      "event_type": "tool_invocation",
+      "skill": {
+        "name": "run"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "skill_tool_use",
+        "confidence": "explicit"
+      },
+      "turn_id": "eaae8ce25d44",
+      "transcript_anchor": {
+        "unit": "line",
+        "start": 298,
+        "end": 299,
+        "entry_ids": [
+          "5d74dcd6-275c-4731-9b8a-a457b7b4b253"
+        ],
+        "tool_use_id": "toolu_014puvrYfKzkgFZCme8Z3gXQ"
+      },
+      "native": {
+        "tool_name": "Skill",
+        "tool_use_id": "toolu_014puvrYfKzkgFZCme8Z3gXQ"
+      },
+      "collapse": {
+        "target": "tool_pair",
+        "label": "Skill: run",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-07-31T10:51:15.025473518Z",
+    "agent_lines": 1437,
+    "agent_removed": 11,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 1437,
+    "total_lines_changed": 1448,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 301,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/CLAUDE.md": 15,
+        ".claude/hooks/vexp-hint.sh": 6,
+        ".claude/settings.json": 93,
+        ".claude/settings.json.vexp-bak": 94,
+        ".github/copilot-instructions.md": 49,
+        ".vexp/.gitattributes": 2,
+        ".vexp/.gitignore": 14,
+        ".vscode/mcp.json": 14,
+        ".vscode/mcp.json.vexp-bak": 14
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 10,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1434,
+      "agent_lines_removed": 11,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 10
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 10,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1460,
+      "agent_lines_removed": 11,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 10
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 10,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1594,
+      "agent_lines_removed": 11,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 10
+      }
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 10,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1738,
+      "agent_lines_removed": 11,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 10
+      }
+    }
+  ]
+}

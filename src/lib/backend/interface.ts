@@ -1,4 +1,4 @@
-import type { Note, Todo, Settings, SyncResult, CommitInfo, Project, Whiteboard, Tag } from '../types';
+import type { Note, Todo, Settings, SyncResult, CommitInfo, Project, Whiteboard, Tag, DayEntry } from '../types';
 
 export interface ApiBackend {
   getNotes(): Promise<Note[]>;
@@ -19,6 +19,9 @@ export interface ApiBackend {
   getWhiteboards(): Promise<Whiteboard[]>;
   saveWhiteboards(whiteboards: Whiteboard[]): Promise<void>;
 
+  getJournal(): Promise<DayEntry[]>;
+  saveJournal(entries: DayEntry[]): Promise<void>;
+
   getTags(): Promise<Tag[]>;
   saveTags(tags: Tag[]): Promise<void>;
 
@@ -28,10 +31,12 @@ export interface ApiBackend {
   getNoteHistory(path: string): Promise<CommitInfo[]>;
   getNoteAtCommit(path: string, sha: string): Promise<string>;
 
-  /** Saves image and returns the URL/path to embed in markdown. */
-  saveTaskNoteImage(id: string, blob: Blob): Promise<string>;
-  /** Converts a stored markdown image path to a displayable URL. */
-  resolveImageUrl(path: string, repoPath: string): string;
+  /** Stores an image under `dir` (repo-relative) and returns its repo-relative path. */
+  saveImage(dir: string, blob: Blob): Promise<string>;
+  /** Repo-relative image path → URL the webview can display (unknown paths pass through). */
+  resolveImageUrl(path: string): string;
+  /** Inverse of resolveImageUrl, for turning displayed markdown back into stored markdown. */
+  unresolveImageUrl(url: string): string;
   /** Reads an image from the native/system clipboard; null if unavailable. */
   readClipboardImage(): Promise<Blob | null>;
 }

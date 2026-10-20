@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, taskShowTags, taskShowDividers, taskFilterToday, todaySelection, todayKey, draggingTodoId, dragOverToday, pinTodoToToday, settings, activeProject, activeProjectTags, focusRequest, projectApplyTick } from '$lib/stores';
+  import { todos, activeTimers, taskFilterStatus, taskFilterPriority, taskFilterTag, taskFilterDuePeriod, taskFilterGroupByTags, taskFilterSearch, taskFilterShowOther, taskFilterHideUngrouped, taskShowTags, taskShowDividers, taskFilterToday, todaySelection, todayKey, draggingTodoId, dragOverToday, pinTodoToToday, activeProject, activeProjectTags, focusRequest, projectApplyTick, projects } from '$lib/stores';
   import { api } from '$lib/api';
-  import type { Todo, WorkSession } from '$lib/types';
+  import type { Todo, WorkSession, ProjectGroup } from '$lib/types';
+  import { projectGroupsOf, groupOf, visibleGroupId } from '$lib/groups';
   import { serializeAnnotations } from '$lib/taskAnnotations';
   import DatePicker from '$lib/components/DatePicker.svelte';
   import NotesEditor from '$lib/components/NotesEditor.svelte';
@@ -23,6 +24,7 @@
   let newPriority: 'none' | 'high' | 'medium' | 'low' = $state('none');
   let newDue = $state('');
   let newTags = $state<string[]>([]);
+  let newGroupId: string | null = $state(null);   // heading the new task goes under
 
   // ── Edit state ────────────────────────────────────────────────────────────
   let editId: string | null = $state(null);
@@ -133,6 +135,7 @@
   // Drop targets are found via elementFromPoint on mouseup, so nothing depends on
   // native dragover/drop events firing.
   let dropTargetId: string | null = $state(null);          // task-wrap highlighted under cursor
+  let dropGroupTarget: string | null = $state(null);       // heading under cursor ('' = "no heading")
   let pdrag = $state<{ id: string; title: string; x: number; y: number } | null>(null);
   let pdown: { id: string; x: number; y: number } | null = null;
   let justDragged = false;                                  // suppress the click after a drag
@@ -141,10 +144,13 @@
   function hasKids(id: string): boolean { return $todos.some((t) => t.parent_id === id); }
 
   async function reparentTo(todo: Todo, parentId: string | null, order?: number) {
-    const updated = await api.saveTodo({ ...todo, parent_id: parentId, order: order ?? null });
+    // A subtask belongs to its parent's heading, so nesting drops its own; a
+    // promoted subtask stays under the heading it was shown under.
+    const group_id = parentId ? null : groupOf(todo, $todos);
+    const updated = await api.saveTodo({ ...todo, parent_id: parentId, order: order ?? null, group_id });
     // Keep the fields we set even if an older backend build drops `order` on the round-trip,
     // so reordering is reflected immediately in the UI.
-    const merged = { ...updated, parent_id: parentId, order: order ?? null };
+    const merged = { ...updated, parent_id: parentId, order: order ?? null, group_id };
     todos.update((ts) => ts.map((t) => t.id === merged.id ? merged : t));
     if (parentId) expandedChildren = new Set(expandedChildren).add(parentId);
   }
@@ -161,6 +167,7 @@
       pdrag = { ...pdrag, x: e.clientX, y: e.clientY };
       const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
       dragOverToday.set(!!el?.closest('[data-drop-today]'));
+      dropGroupTarget = el?.closest('[data-drop-group]')?.getAttribute('data-drop-group') ?? null;
       const tid = (el?.closest('.task-wrap[data-todo-id]') as HTMLElement | null)?.getAttribute('data-todo-id') ?? null;
       dropTargetId = (tid && tid !== pdrag.id && !hasKids(pdrag.id)) ? tid : null;
       return;
@@ -187,6 +194,8 @@
     if (!dragged) return;
     const el = document.elementFromPoint(x, y) as HTMLElement | null;
     if (el?.closest('[data-drop-today]')) { pinTodoToToday(draggedId); return; }
+    const groupTarget = el?.closest('[data-drop-group]')?.getAttribute('data-drop-group');
+    if (groupTarget != null) { await moveToGroup(dragged, groupTarget || null); return; }
     const targetId = (el?.closest('.task-wrap[data-todo-id]') as HTMLElement | null)?.getAttribute('data-todo-id');
     const target = targetId ? $todos.find((t) => t.id === targetId) : null;
     if (target) { await dropOnTask(dragged, target); return; }
@@ -194,7 +203,7 @@
     if (dragged.parent_id) await reparentTo(dragged, null);
   }
   function endPDrag() {
-    pdrag = null; dropTargetId = null; draggingTodoId.set(null); dragOverToday.set(false);
+    pdrag = null; dropTargetId = null; dropGroupTarget = null; draggingTodoId.set(null); dragOverToday.set(false);
     document.body.style.userSelect = '';
     justDragged = true; setTimeout(() => { justDragged = false; }, 0);
   }
@@ -326,6 +335,84 @@
       })
   );
 
+  // ── Project headings ──────────────────────────────────────────────────────
+  // Only in a project's own list; tag-grouping and Today have their own layout.
+  let projectGroups = $derived(projectGroupsOf($activeProject));
+  let showHeadings = $derived(!!$activeProject && !$taskFilterToday && groupTags.length === 0);
+  let noHeadingPending = $derived(
+    showHeadings ? pendingTodos.filter((t) => !visibleGroupId(t, $activeProject)) : pendingTodos
+  );
+  let headingSections = $derived(
+    showHeadings
+      ? projectGroups.map((group) => ({
+          group,
+          todos: pendingTodos.filter((t) => visibleGroupId(t, $activeProject) === group.id),
+        }))
+      : []
+  );
+
+  let addingGroup = $state(false);
+  let newGroupName = $state('');
+  let renamingGroupId: string | null = $state(null);
+  let renameGroupValue = $state('');
+  let confirmDeleteGroupId: string | null = $state(null);
+
+  async function saveGroups(groups: ProjectGroup[]) {
+    const project = $activeProject;
+    if (!project) return;
+    const next = $projects.map((p) => (p.id === project.id ? { ...p, groups } : p));
+    projects.set(next);
+    await api.saveProjects(next);
+  }
+
+  async function addGroup() {
+    const name = newGroupName.trim();
+    if (!name) { addingGroup = false; return; }
+    const order = projectGroups.reduce((m, g) => Math.max(m, g.order), 0) + 1;
+    await saveGroups([...projectGroups, { id: crypto.randomUUID(), name, order }]);
+    newGroupName = '';
+    addingGroup = false;
+  }
+
+  async function renameGroup(id: string) {
+    const name = renameGroupValue.trim();
+    renamingGroupId = null;
+    if (!name) return;
+    await saveGroups(projectGroups.map((g) => (g.id === id ? { ...g, name } : g)));
+  }
+
+  async function moveGroup(id: string, dir: -1 | 1) {
+    const i = projectGroups.findIndex((g) => g.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= projectGroups.length) return;
+    const a = projectGroups[i], b = projectGroups[j];
+    await saveGroups(projectGroups.map((g) =>
+      g.id === a.id ? { ...g, order: b.order } : g.id === b.id ? { ...g, order: a.order } : g));
+  }
+
+  async function deleteGroup(id: string) {
+    confirmDeleteGroupId = null;
+    // Members stay in the project, just without a heading.
+    for (const t of $todos.filter((t) => !t.parent_id && t.group_id === id)) {
+      const updated = await api.saveTodo({ ...t, group_id: null });
+      todos.update((ts) => ts.map((x) => (x.id === updated.id ? updated : x)));
+    }
+    await saveGroups(projectGroups.filter((g) => g.id !== id));
+  }
+
+  // Put a todo under a heading (null = no heading). A subtask dropped on a
+  // heading becomes a top-level task there.
+  async function moveToGroup(todo: Todo, groupId: string | null) {
+    if (!todo.parent_id && (todo.group_id ?? null) === groupId) return;
+    const updated = await api.saveTodo({ ...todo, parent_id: null, order: todo.parent_id ? null : todo.order ?? null, group_id: groupId });
+    todos.update((ts) => ts.map((t) => (t.id === updated.id ? updated : t)));
+  }
+
+  function newTaskUnder(groupId: string | null) {
+    newGroupId = groupId;
+    showForm = true;
+  }
+
   let selTodo = $derived(
     selectedIds.size === 1 ? $todos.find((t) => selectedIds.has(t.id)) ?? null : null
   );
@@ -390,10 +477,11 @@
     const created = await api.saveTodo({
       id: '', title: newTitle.trim(), done: false, priority: newPriority,
       due_date: newDue || null, tags,
+      group_id: showHeadings && projectGroups.some((g) => g.id === newGroupId) ? newGroupId : null,
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     });
     todos.update((ts) => [created, ...ts]);
-    newTitle = ''; newPriority = 'none'; newDue = ''; newTags = [];
+    newTitle = ''; newPriority = 'none'; newDue = ''; newTags = []; newGroupId = null;
     showForm = false;
   }
 
@@ -590,7 +678,7 @@
 
   // Clicking anywhere on the page that isn't a todo (or the page chrome) acts as a
   // reset area: collapse the active card, close its notes, and hide subtasks.
-  const RESET_CHROME = '.task-wrap, .page-header, .new-task-form, .filter-bar, .selection-bar';
+  const RESET_CHROME = '.task-wrap, .page-header, .new-task-form, .filter-bar, .selection-bar, .heading-row, .heading-new, .add-heading-btn';
 
   // Track where the press began so a text selection that starts inside a card and
   // ends in the background doesn't fire a reset. Reset only when BOTH the mousedown
@@ -655,7 +743,7 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
         </button>
       {/if}
-      <button class="fab" onclick={() => (showForm = !showForm)} title="New task">
+      <button class="fab" onclick={() => { newGroupId = null; showForm = !showForm; }} title="New task">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
     </div>
@@ -716,6 +804,12 @@
         <DatePicker bind:value={newDue} placeholder="Due date" />
         <TagInput bind:value={newTags} locked={$activeProjectTags} placeholder="#tags — type to search, Enter to add" />
       </div>
+      {#if newGroupId && showHeadings}
+        {@const g = projectGroups.find((x) => x.id === newGroupId)}
+        {#if g}
+          <button class="afilter form-group-chip" onclick={() => (newGroupId = null)} title="Add without heading">Under: {g.name}<span class="afilter-x">✕</span></button>
+        {/if}
+      {/if}
       <div class="form-actions">
         <button class="btn-primary" onclick={createTodo}>Add task</button>
         <button class="btn-ghost" onclick={() => (showForm = false)}>Cancel</button>
@@ -1064,7 +1158,6 @@
         {#if hasNotes}
           <NotesEditor
             {todo}
-            repoPath={$settings.repo_path}
             {hasChildren}
             {focusMode}
             onClose={closeNotes}
@@ -1080,7 +1173,7 @@
     </div>
   {:else}
   <div class="task-list">
-    {#if filtered.length === 0}
+    {#if filtered.length === 0 && !showHeadings}
       <div class="empty">No tasks match the current filters.</div>
     {:else if groupTags.length > 0}
       <!-- Grouped view — sorted by earliest due date, then best priority -->
@@ -1109,13 +1202,68 @@
         {/each}
       {/if}
     {:else}
-      <!-- Flat view -->
-      {#if pendingTodos.length === 0}
+      <!-- Flat view (inside a project: tasks without a heading first, then each heading) -->
+      {#if pendingTodos.length === 0 && projectGroups.length === 0}
         <div class="empty">All tasks completed.</div>
       {/if}
-      {#each pendingTodos as todo (todo.id)}
+      {#if showHeadings && pdrag && projectGroups.length > 0}
+        <div class="heading-drop-none {dropGroupTarget === '' ? 'drag-target' : ''}" data-drop-group="">No heading</div>
+      {/if}
+      {#each noHeadingPending as todo (todo.id)}
         {@render taskCard(todo, false)}
       {/each}
+      {#each headingSections as { group, todos: groupTodos } (group.id)}
+        <div class="heading-row {dropGroupTarget === group.id ? 'drag-target' : ''}" data-drop-group={group.id}>
+          {#if renamingGroupId === group.id}
+            <!-- svelte-ignore a11y_autofocus -->
+            <input class="heading-input" bind:value={renameGroupValue} autofocus
+              onkeydown={(e) => { if (e.key === 'Enter') renameGroup(group.id); if (e.key === 'Escape') renamingGroupId = null; }}
+              onblur={() => renameGroup(group.id)} />
+          {:else}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <span class="heading-name" ondblclick={() => { renamingGroupId = group.id; renameGroupValue = group.name; }} title="Double-click to rename">{group.name}</span>
+            <span class="heading-count">{groupTodos.length}</span>
+            <div class="heading-actions">
+              {#if confirmDeleteGroupId === group.id}
+                <button class="heading-btn danger" onclick={() => deleteGroup(group.id)} title="Tasks keep existing, without a heading">Delete heading?</button>
+                <button class="heading-btn" onclick={() => (confirmDeleteGroupId = null)}>Cancel</button>
+              {:else}
+                <button class="heading-btn" onclick={() => newTaskUnder(group.id)} title="New task under this heading" aria-label="New task under this heading">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                </button>
+                <button class="heading-btn" onclick={() => moveGroup(group.id, -1)} title="Move heading up" aria-label="Move heading up">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+                </button>
+                <button class="heading-btn" onclick={() => moveGroup(group.id, 1)} title="Move heading down" aria-label="Move heading down">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <button class="heading-btn" onclick={() => { renamingGroupId = group.id; renameGroupValue = group.name; }} title="Rename heading" aria-label="Rename heading">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                </button>
+                <button class="heading-btn" onclick={() => (confirmDeleteGroupId = group.id)} title="Delete heading" aria-label="Delete heading">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+                </button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+        {#each groupTodos as todo (todo.id)}
+          {@render taskCard(todo, false)}
+        {/each}
+        {#if groupTodos.length === 0}
+          <div class="heading-empty">Drag tasks here or use +</div>
+        {/if}
+      {/each}
+      {#if showHeadings}
+        {#if addingGroup}
+          <!-- svelte-ignore a11y_autofocus -->
+          <input class="heading-input heading-new" placeholder="Heading name" bind:value={newGroupName} autofocus
+            onkeydown={(e) => { if (e.key === 'Enter') addGroup(); if (e.key === 'Escape') { addingGroup = false; newGroupName = ''; } }}
+            onblur={addGroup} />
+        {:else}
+          <button class="add-heading-btn" onclick={() => (addingGroup = true)}>+ Add heading</button>
+        {/if}
+      {/if}
 
       {#if doneTodos.length > 0}
         <div class="section-divider">
@@ -1284,6 +1432,42 @@
   .group-divider::before, .group-divider::after {
     content: ''; flex: 1; height: 1px; background: color-mix(in srgb, var(--accent) 30%, transparent);
   }
+
+  /* Project headings: group tasks without being tasks themselves */
+  .heading-row {
+    display: flex; align-items: center; gap: 8px;
+    margin: 22px 0 4px; padding: 6px var(--pad-x);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    border-radius: 6px 6px 0 0;
+  }
+  .heading-row.drag-target { background: var(--accent-bg); box-shadow: inset 0 0 0 2px var(--accent); }
+  .heading-name { font-size: 0.95rem; font-weight: 700; color: var(--accent-lt); cursor: default; }
+  .heading-count { font-size: 0.75rem; color: var(--text-6); }
+  .heading-actions { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; }
+  .heading-row:hover .heading-actions, .heading-actions:focus-within { opacity: 1; }
+  .heading-btn {
+    display: flex; align-items: center; gap: 4px; padding: 4px 6px; border: none; border-radius: 6px;
+    background: none; color: var(--text-5); cursor: pointer; font-size: 0.75rem;
+  }
+  .heading-btn:hover { background: var(--surface-alt); color: var(--accent-lt); }
+  .heading-btn.danger { color: var(--red, #f87171); }
+  .heading-input {
+    flex: 1; font-size: 0.95rem; font-weight: 700; color: var(--text); background: var(--bg);
+    border: 1px solid var(--accent); border-radius: 6px; padding: 4px 8px; outline: none;
+  }
+  .heading-new { display: block; width: calc(100% - 2 * var(--pad-x)); margin: 18px var(--pad-x) 0; box-sizing: border-box; }
+  .heading-empty { padding: 8px var(--pad-x); font-size: 0.8rem; color: var(--text-7); font-style: italic; }
+  .heading-drop-none {
+    margin: 4px var(--pad-x) 8px; padding: 8px; text-align: center; font-size: 0.8rem; color: var(--text-6);
+    border: 1px dashed var(--border-2); border-radius: 8px;
+  }
+  .heading-drop-none.drag-target { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-lt); }
+  .add-heading-btn {
+    display: block; margin: 16px var(--pad-x) 0; padding: 6px 0; border: none; background: none; text-align: left;
+    color: var(--text-6); font-size: 0.82rem; cursor: pointer;
+  }
+  .add-heading-btn:hover { color: var(--accent-lt); }
+  .form-group-chip { align-self: flex-start; }
 
   .due-period-chip.active { background: var(--yellow-bg); border-color: var(--yellow); color: var(--yellow); }
   .group-tag-chip { color: var(--accent-purple); border-color: color-mix(in srgb, var(--accent-purple) 30%, transparent); }

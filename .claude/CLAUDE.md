@@ -1,4 +1,4 @@
-## vexp - Context-Aware AI Coding <!-- vexp v2.4.0 -->
+## vexp - Context-Aware AI Coding <!-- vexp v2.6.2 -->
 vexp runs entirely on this machine: local daemon, index in `.vexp/`.
 `run_pipeline` transmits nothing to any external service.
 - `run_pipeline({ "task": "..." })` - orientation in one call (ranked pivot
@@ -6,6 +6,10 @@ vexp runs entirely on this machine: local daemon, index in `.vexp/`.
   name the files/symbols to touch. If it does, SKIP vexp - use your normal tools.
 - `get_skeleton` - file structure at 70-90% token savings for files you only
   need to understand, not edit.
+- `verify_done` - call once BEFORE declaring a multi-file task complete:
+  returns mechanically broken references (imports of removed names, parse
+  errors), untouched dependents of the files you changed (file:line), and
+  the impacted tests - RUN those tests before declaring done.
 - vexp may append a one-line hint to a prompt when orientation would help;
   otherwise it stays silent.
 

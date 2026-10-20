@@ -1,7 +1,20 @@
 <script lang="ts">
-  import { notes, todos, pendingTodos, recentNotes, syncState, activeView, selectedNoteId } from '$lib/stores';
+  import { notes, todos, pendingTodos, recentNotes, syncState, activeView, selectedNoteId, journal, dailyDialog, todayKey } from '$lib/stores';
+  import { reviewDayKey } from '$lib/journal';
 
   let { onSync }: { onSync: () => void } = $props();
+
+  // ── Daily plan / review card ──────────────────────────────────────────────
+  // From 17:00 (and until the review rollover after midnight) the evening review
+  // is the suggested action; otherwise the morning plan.
+  const isEvening = $derived.by(() => { const h = new Date().getHours(); return h >= 17 || h < 4; });
+  const todayPlan = $derived($journal.find((d) => d.id === todayKey()) ?? null);
+  const reviewEntry = $derived($journal.find((d) => d.id === reviewDayKey()) ?? null);
+  const dayStatus = $derived(
+    reviewEntry?.reviewed_at ? 'Day reviewed. Rest well.'
+    : todayPlan?.planned_at ? `${todayPlan.items.length} todo${todayPlan.items.length === 1 ? '' : 's'} planned for today.`
+    : 'No plan for today yet.'
+  );
 
   // ── Activity calendar ─────────────────────────────────────────────────────
   type CalMode = 'minutes' | 'tasks';
@@ -255,6 +268,14 @@
     </button>
   </header>
 
+  <div class="day-card">
+    <span class="day-status">{dayStatus}</span>
+    <div class="day-actions">
+      <button class="day-btn" class:primary={!isEvening} onclick={() => dailyDialog.set('morning')}>Plan day</button>
+      <button class="day-btn" class:primary={isEvening} onclick={() => dailyDialog.set('evening')}>Review day</button>
+    </div>
+  </div>
+
   <!-- Activity calendar -->
   <div class="cal-card">
     <div class="cal-top">
@@ -461,6 +482,22 @@
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ── Calendar card ── */
+  .day-card {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    padding: 12px 16px;
+  }
+  .day-status { font-size: 0.875rem; color: var(--text-3); }
+  .day-actions { display: flex; gap: 8px; }
+  .day-btn {
+    padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border-2);
+    background: transparent; color: var(--text-4); font-size: 0.82rem; cursor: pointer;
+    transition: all 0.12s;
+  }
+  .day-btn:hover { border-color: var(--accent); color: var(--text-2); }
+  .day-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .day-btn.primary:hover { background: var(--accent-dk); }
+
   .cal-card {
     background: var(--surface);
     border: 1px solid var(--border);

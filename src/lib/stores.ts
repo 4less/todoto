@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import type { Note, Todo, Settings, SyncResult, View, Project, Whiteboard, Tag } from './types';
+import type { Note, Todo, Settings, SyncResult, View, Project, Whiteboard, Tag, DayEntry } from './types';
 
 function localStore<T>(key: string, initial: T) {
   const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
@@ -52,6 +52,14 @@ export const whiteboards = writable<Whiteboard[]>([]);
 // Id of the board opened full-screen, or null for the normal views. The open board
 // takes over the whole content area, leaving only the sidebar/menubar visible.
 export const openWhiteboardId = writable<string | null>(null);
+
+// Daily journal (synced via journal.json): one morning-plan/evening-review entry per day.
+export const journal = writable<DayEntry[]>([]);
+// Which daily dialog is open, if any.
+export const dailyDialog = writable<'morning' | 'evening' | null>(null);
+// Day (YYYY-MM-DD) the evening dialog reviews; null = the current review day.
+// Set from the Journal view to edit a past day.
+export const dailyDialogDay = writable<string | null>(null);
 
 // Set to a todo id to ask the Tasks view to open that task in focus mode. The
 // Tasks view consumes and clears it. Lets the sidebar jump back to the running task.

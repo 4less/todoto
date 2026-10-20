@@ -1,7 +1,5 @@
-// Tauri doesn't have a Node.js server to do proper SSR
-// so we use adapter-static with a fallback to index.html to put the site in SPA mode
+// Static SPA build (index.html fallback), deployed to GitHub Pages.
 // See: https://svelte.dev/docs/kit/single-page-apps
-// See: https://v2.tauri.app/start/frontend/sveltekit/ for more info
 import adapter from "@sveltejs/adapter-static";
 
 /** @type {import('@sveltejs/kit').Config} */
@@ -10,6 +8,9 @@ const config = {
     adapter: adapter({
       fallback: "index.html",
     }),
+    // Registered manually in +layout.svelte — only in the browser, not in the
+    // Tauri shell, which serves the app from its own bundle anyway.
+    serviceWorker: { register: false },
     paths: {
       base: process.env.BASE_PATH ?? "",
     },

@@ -8,22 +8,26 @@ export PATH := env_var('HOME') + "/Android/Sdk/cmdline-tools/latest/bin:" + env_
 default:
     @just --list
 
-# Start desktop dev server with hot reload
+# Start desktop app with hot reload
 dev:
     npm run tauri dev
+
+# Start the web version only (http://localhost:1420)
+dev-web:
+    npm run dev
 
 # Start Android dev server with hot reload (requires connected device or emulator)
 dev-android:
     npm run tauri android dev
 
-# Install the app locally (builds release and installs the .deb)
+# Install the desktop app locally (builds release and installs the .deb)
 install:
-    npm run tauri build
+    npm run tauri build -- --bundles deb
     sudo dpkg -i src-tauri/target/release/bundle/deb/todoto_*.deb
 
 # Build AppImage
 appimage:
-    npm run tauri build --bundles appimage
+    npm run tauri build -- --bundles appimage
     @echo "AppImage: src-tauri/target/release/bundle/appimage/todoto_*.AppImage"
 
 # Build Android debug APK (auto-signed, installable directly)
@@ -35,6 +39,11 @@ apk:
 apk-release:
     npm run tauri android build -- --apk
     @echo "APK: src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk"
+
+# Serve the production web build locally (service worker + offline work here)
+preview:
+    npm run build
+    npm run preview
 
 # Generate icons from source image
 icons src="img/logo/todoto.png":

@@ -6,68 +6,32 @@
   import { setBlockTypeCommand, codeBlockSchema } from '@milkdown/kit/preset/commonmark';
   import { Plugin, PluginKey, TextSelection, NodeSelection } from '@milkdown/kit/prose/state';
   import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
-  import { api, saveTaskNoteImage } from '$lib/api';
+  import { api } from '$lib/api';
+  import { toDisplayMarkdown, toStoredMarkdown } from '$lib/images';
   import { installLinkPlugin } from '$lib/milkdownLinks';
   import { attachMention } from '$lib/mentions';
   import type { Todo, CommitInfo } from '$lib/types';
 
   let {
     todo,
-    repoPath,
     hasChildren = false,
     focusMode = false,
     onClose,
     onTodoUpdated,
   }: {
     todo: Todo;
-    repoPath: string;
     hasChildren?: boolean;
     focusMode?: boolean;
     onClose: () => void;
     onTodoUpdated: (updated: Todo) => void;
   } = $props();
 
-  // ── Asset URL helpers ──────────────────────────────────────────────────────
-  // notesContent stores asset:// URLs so the live editor can display images.
-  // The .md file on disk stores repo-relative paths (portable, syncs to GitHub).
-
-  const ASSET_RE = /^(?:asset:\/\/localhost|https?:\/\/asset\.localhost)(\/.*)/;
-
-  function splitUrlTitle(raw: string): [string, string] {
-    const i = raw.search(/\s+["']/);
-    return i >= 0 ? [raw.slice(0, i), raw.slice(i)] : [raw.trim(), ''];
-  }
-
-  function makeImagesLoadable(content: string): string {
-    if (!repoPath) return content;
-    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, raw) => {
-      const [src, title] = splitUrlTitle(raw);
-      if (src.startsWith('http') || src.startsWith('data:') || ASSET_RE.test(src)) return match;
-      const abs = src.startsWith('/') ? src : `${repoPath}/${src}`;
-      return `![${alt}](${api.resolveImageUrl(abs, repoPath)}${title})`;
-    });
-  }
-
-  function stripAssetUrls(content: string): string {
-    if (!repoPath) return content;
-    const prefix = repoPath + '/';
-    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, raw) => {
-      const [src, title] = splitUrlTitle(raw);
-      const m = src.match(ASSET_RE);
-      if (!m) return match;
-      let abs = decodeURIComponent(m[1]);
-      if (abs.startsWith('//')) abs = abs.slice(1);
-      const rel = abs.startsWith(prefix) ? abs.slice(prefix.length) : abs;
-      return `![${alt}](${rel}${title})`;
-    });
-  }
-
   // ── Content state ──────────────────────────────────────────────────────────
-  let notesContent = $state(makeImagesLoadable(todo.notes ?? ''));
+  let notesContent = $state(toDisplayMarkdown(todo.notes ?? ''));
   let notesSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
   async function persistNotes() {
-    const updated = await api.saveTodo({ ...todo, notes: stripAssetUrls(notesContent) || null });
+    const updated = await api.saveTodo({ ...todo, notes: toStoredMarkdown(notesContent) || null });
     onTodoUpdated(updated);
   }
 
@@ -92,7 +56,7 @@
     } else {
       // Raw is the source of truth — load into editor without letting
       // Milkdown's re-serialization overwrite what the user typed.
-      const loadable = makeImagesLoadable(notesContent);
+      const loadable = toDisplayMarkdown(notesContent);
       notesContent = loadable;
       if (notesEditorInstance) {
         notesEditorLoading = true;
@@ -494,8 +458,8 @@
     }, true);
 
     const uploadImage = async (file: File) => {
-      const url = await saveTaskNoteImage(todo.id, file);
-      return api.resolveImageUrl(url, repoPath);
+      const path = await api.saveImage('task-notes/img', file);
+      return api.resolveImageUrl(path);
     };
 
     const c = new Crepe({
@@ -525,8 +489,8 @@
     });
 
     async function insertImageBlob(blob: Blob) {
-      const url = await saveTaskNoteImage(todo.id, blob);
-      const assetUrl = api.resolveImageUrl(url, repoPath);
+      const path = await api.saveImage('task-notes/img', blob);
+      const assetUrl = api.resolveImageUrl(path);
       c.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
         const nodeType = view.state.schema.nodes['image-block'];
@@ -666,7 +630,7 @@
   </div>
 
   {#if notesDiffMode && notesHistorySha && notesHistoryContent}
-    {@const diffChunks = buildDiffLines(notesHistoryContent, stripAssetUrls(notesContent))}
+    {@const diffChunks = buildDiffLines(notesHistoryContent, toStoredMarkdown(notesContent))}
     <div class="notes-diff-view">
       {#each diffChunks as line}
         <div class="diff-line diff-{line.type}">{line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}{line.text}</div>

@@ -6,7 +6,7 @@
   import { notes, todos, settings, activeView, showSettings, syncState, diskFolders, theme,
     projects, activeProjectId, taskFilterTag, taskFilterGroupByTags, taskFilterHideUngrouped,
     taskFilterToday, draggingTodoId, dragOverToday, activeTimers, focusRequest, projectApplyTick,
-    whiteboards, openWhiteboardId, tags, showTagManager } from '$lib/stores';
+    whiteboards, openWhiteboardId, tags, showTagManager, journal, dailyDialog, dailyDialogDay } from '$lib/stores';
   import type { Project } from '$lib/types';
   import HomeView from '$lib/components/HomeView.svelte';
   import TasksView from '$lib/components/TasksView.svelte';
@@ -18,6 +18,8 @@
   import WhiteboardView from '$lib/components/WhiteboardView.svelte';
   import TagManager from '$lib/components/TagManager.svelte';
   import MentionHost from '$lib/components/MentionHost.svelte';
+  import DailyDialog from '$lib/components/DailyDialog.svelte';
+  import JournalView from '$lib/components/JournalView.svelte';
 
   let autoSyncTimer: ReturnType<typeof setInterval> | null = null;
   let loading = $state(true);
@@ -95,7 +97,7 @@
 
   // ── Data loading ──────────────────────────────────────────────────────────
   async function loadAll() {
-    const [n, t, s, f, p, w, g] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings(), api.getFolders(), api.getProjects(), api.getWhiteboards(), api.getTags()]);
+    const [n, t, s, f, p, w, g, j] = await Promise.all([api.getNotes(), api.getTodos(), api.getSettings(), api.getFolders(), api.getProjects(), api.getWhiteboards(), api.getTags(), api.getJournal()]);
     notes.set(n);
     todos.set(t);
     settings.set(s);
@@ -103,6 +105,7 @@
     projects.set(p);
     whiteboards.set(w);
     tags.set(g);
+    journal.set(j);
     const lastSync = await api.getLastSync();
     syncState.update((st) => ({ ...st, lastSync }));
     scheduleAutoSync(s.auto_sync, s.sync_interval_seconds);
@@ -133,8 +136,10 @@
     syncState.update((s) => ({ ...s, syncing: true }));
     try {
       const result = await api.syncNow();
-      const [n, t, f, p, w, g] = await Promise.all([api.getNotes(), api.getTodos(), api.getFolders(), api.getProjects(), api.getWhiteboards(), api.getTags()]);
+      const [n, t, f, p, w, g, j] = await Promise.all([api.getNotes(), api.getTodos(), api.getFolders(), api.getProjects(), api.getWhiteboards(), api.getTags(), api.getJournal()]);
       notes.set(n); todos.set(t); diskFolders.set(f); projects.set(p); tags.set(g);
+      // Same for an open daily dialog: it edits a snapshot of its day's entry.
+      if (!get(dailyDialog)) journal.set(j);
       // An open board is being edited right now — adopting the just-synced copy
       // would clobber unsaved local moves, so leave the store alone until it closes.
       if (!get(openWhiteboardId)) whiteboards.set(w);
@@ -172,6 +177,7 @@
     { id: 'tasks'  as const, label: 'Tasks',  svg: svgTasks  },
     { id: 'today'  as const, label: 'Today',  svg: svgToday  },
     { id: 'docs'   as const, label: 'Docs',   svg: svgDocs   },
+    { id: 'journal' as const, label: 'Journal', svg: svgJournal },
     { id: 'search' as const, label: 'Search', svg: svgSearch },
   ];
 
@@ -187,6 +193,9 @@
   }
   function svgDocs() {
     return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
+  }
+  function svgJournal() {
+    return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`;
   }
   function svgSearch() {
     return `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
@@ -241,6 +250,16 @@
     </div>
 
     <div class="sidebar-footer">
+      <button class="settings-btn" onclick={() => dailyDialog.set('morning')}
+        title={sidebarCollapsed ? 'Plan day' : ''}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 18a5 5 0 0 0-10 0"/><line x1="12" y1="2" x2="12" y2="9"/><line x1="4.22" y1="10.22" x2="5.64" y2="11.64"/><line x1="1" y1="18" x2="3" y2="18"/><line x1="21" y1="18" x2="23" y2="18"/><line x1="18.36" y1="11.64" x2="19.78" y2="10.22"/><line x1="23" y1="22" x2="1" y2="22"/><polyline points="8 6 12 2 16 6"/></svg>
+        {#if !sidebarCollapsed}Plan day{/if}
+      </button>
+      <button class="settings-btn" onclick={() => dailyDialog.set('evening')}
+        title={sidebarCollapsed ? 'Review day' : ''}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        {#if !sidebarCollapsed}Review day{/if}
+      </button>
       <SyncIndicator onSync={triggerSync} collapsed={sidebarCollapsed} />
       <button class="settings-btn" onclick={() => showTagManager.set(true)}
         title={sidebarCollapsed ? 'Tags' : ''}>
@@ -266,6 +285,8 @@
       <TasksView />
     {:else if $activeView === 'docs'}
       <DocsView onTodosChanged={loadAll} />
+    {:else if $activeView === 'journal'}
+      <JournalView />
     {:else if $activeView === 'search'}
       <SearchView />
     {/if}
@@ -317,6 +338,14 @@
       <ProjectsNav collapsed={false} onApply={applyProject} />
     </div>
     <div class="drawer-footer">
+      <button class="drawer-item" onclick={() => { dailyDialog.set('morning'); closeDrawer(); }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 18a5 5 0 0 0-10 0"/><line x1="12" y1="2" x2="12" y2="9"/><line x1="4.22" y1="10.22" x2="5.64" y2="11.64"/><line x1="1" y1="18" x2="3" y2="18"/><line x1="21" y1="18" x2="23" y2="18"/><line x1="18.36" y1="11.64" x2="19.78" y2="10.22"/><line x1="23" y1="22" x2="1" y2="22"/><polyline points="8 6 12 2 16 6"/></svg>
+        <span>Plan day</span>
+      </button>
+      <button class="drawer-item" onclick={() => { dailyDialog.set('evening'); closeDrawer(); }}>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <span>Review day</span>
+      </button>
       <button class="drawer-item" onclick={() => { showTagManager.set(true); closeDrawer(); }}>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
         <span>Tags</span>
@@ -334,6 +363,12 @@
 
   {#if $showTagManager}
     <TagManager />
+  {/if}
+
+  {#if $dailyDialog}
+    {#key `${$dailyDialog}:${$dailyDialogDay}`}
+      <DailyDialog mode={$dailyDialog} day={$dailyDialogDay} />
+    {/key}
   {/if}
 
   <!-- Renders the "@" suggestion and link picker for every field that opts in. -->

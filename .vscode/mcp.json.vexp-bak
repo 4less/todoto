@@ -4,7 +4,7 @@
       "type": "stdio",
       "command": "node",
       "args": [
-        "/home/joachim/.vscode/extensions/vexp.vexp-vscode-2.1.4-linux-x64/dist/mcp-server.cjs"
+        "/home/joachim/.vscode/extensions/vexp.vexp-vscode-2.4.0-linux-x64/dist/mcp-server.cjs"
       ],
       "env": {
         "VEXP_WORKSPACE": "/home/joachim/git/4less/todoto"

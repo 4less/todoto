@@ -6,7 +6,7 @@
 - **Recurring tasks** — daily/weekly/monthly recurrence rules; auto-spawn a copy when marked done
 - **Bulk edit** — change priority or tags on multiple selected tasks at once (selection bar already exists)
 - **Drag-to-reorder** — manual sort order persisted alongside git sync
-- **Due-date reminders** — native OS notification (Tauri `notification` plugin) when a task is due or overdue
+- **Due-date reminders** — browser notification (Notification API) when a task is due or overdue
 - **Estimated time** — add an `estimate` field (e.g. `~2h`) alongside logged work sessions
 - **Keyboard-only task creation** — press `n` anywhere to open the new-task form without clicking the FAB
 

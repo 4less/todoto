@@ -31,6 +31,9 @@ export interface Todo {
   note_path?: string | null;
   parent_id?: string | null;
   order?: number | null;
+  // Heading (ProjectGroup) this top-level todo sits under. Subtasks don't use
+  // it — they belong to their parent's group (see groupOf in $lib/groups).
+  group_id?: string | null;
 }
 
 // A user-defined tag-based shortcut shown in the sidebar/drawer.
@@ -41,6 +44,17 @@ export interface Project {
   tags: string[];
   icon: string;  // key into PROJECT_ICONS
   color: string; // hex colour
+  groups?: ProjectGroup[];
+}
+
+// A heading inside a project that groups todos without being a todo itself.
+// Membership is stored once, on the todo (Todo.group_id); a group's members
+// are derived from that (groupMembers in $lib/groups), so the two can never
+// disagree — even when projects.json and todos.json sync from different devices.
+export interface ProjectGroup {
+  id: string;
+  name: string;
+  order: number;
 }
 
 // ── Tags ─────────────────────────────────────────────────────────────────────
@@ -88,6 +102,30 @@ export interface Whiteboard {
   updated_at: string;
 }
 
+// ── Daily journal ────────────────────────────────────────────────────────────
+// One entry per calendar day: the morning plan (which todos, with an optional
+// goal each) and the evening review of it. Todos are referenced by id only, so
+// a deleted todo just drops out of the review.
+
+export interface DayPlanItem {
+  todo_id: string;
+  goal: string;     // what the user wanted to achieve (morning)
+  progress: string; // what actually happened (evening)
+}
+
+export interface DayEntry {
+  id: string; // local calendar day, YYYY-MM-DD — doubles as the merge key
+  items: DayPlanItem[];
+  planned_at: string | null;  // morning dialog last saved
+  reviewed_at: string | null; // evening dialog last saved
+  focus: number;        // 0 = not rated, 1–5
+  productivity: number; // 0 = not rated, 1–5
+  what_happened: string;
+  prepare_tomorrow: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Settings {
   repo_path: string;
   repo_url: string;
@@ -110,4 +148,4 @@ export interface CommitInfo {
   message: string;
 }
 
-export type View = 'home' | 'tasks' | 'today' | 'docs' | 'search';
+export type View = 'home' | 'tasks' | 'today' | 'journal' | 'docs' | 'search';

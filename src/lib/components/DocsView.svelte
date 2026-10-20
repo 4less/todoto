@@ -17,8 +17,7 @@
   import { setBlockTypeCommand, codeBlockSchema, inlineCodeSchema } from '@milkdown/kit/preset/commonmark';
   import { Plugin, PluginKey } from '@milkdown/kit/prose/state';
   import { Decoration, DecorationSet } from '@milkdown/kit/prose/view';
-  import { convertFileSrc } from '@tauri-apps/api/core';
-  import { settings } from '$lib/stores';
+  import { toDisplayMarkdown, toStoredMarkdown } from '$lib/images';
 
   let { onTodosChanged }: { onTodosChanged: () => void } = $props();
 
@@ -116,7 +115,7 @@
       historyContent = raw;
       if (!diffMode) {
         loadingNote = true;
-        crepe.editor.action(replaceAll(makeImagesLoadable(stripFrontmatter(raw), currentNote.folder ?? '')));
+        crepe.editor.action(replaceAll(toDisplayMarkdown(stripFrontmatter(raw))));
         loadingNote = false;
         crepe.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => false }); });
       }
@@ -133,7 +132,7 @@
     historyCommits = [];
     if (crepe && currentNote) {
       loadingNote = true;
-      crepe.editor.action(replaceAll(makeImagesLoadable(currentMarkdown, currentNote.folder ?? '')));
+      crepe.editor.action(replaceAll(toDisplayMarkdown(currentMarkdown)));
       loadingNote = false;
       crepe.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => true }); });
     }
@@ -147,7 +146,7 @@
     } else {
       // switching back to editor: load historical content into editor
       loadingNote = true;
-      crepe.editor.action(replaceAll(makeImagesLoadable(stripFrontmatter(historyContent), currentNote.folder ?? '')));
+      crepe.editor.action(replaceAll(toDisplayMarkdown(stripFrontmatter(historyContent))));
       loadingNote = false;
       crepe.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => false }); });
     }
@@ -211,53 +210,6 @@
     }
   });
 
-  // Matches asset:// and http(s)://asset.localhost URLs produced by convertFileSrc
-  const ASSET_RE = /^(?:asset:\/\/localhost|https?:\/\/asset\.localhost)(\/.*)/;
-
-  // Convert relative image paths to asset:// URLs so Tauri's WebView can load
-  // them directly from the filesystem (assetProtocol is enabled in tauri.conf.json).
-  // Splits "url" or `url "title"` or `url 'title'` into [url, title].
-  function splitUrlTitle(raw: string): [string, string] {
-    const m = raw.match(/^(\S+)(?:\s+(["'(].*["')]\s*))?$/);
-    return m ? [m[1], m[2] ?? ''] : [raw, ''];
-  }
-
-  // Images are always resolved from the repo root (global img/ directory).
-  // A reference like `img/diagram.png` always means `{repoPath}/img/diagram.png`,
-  // regardless of which folder the note lives in — so moving/renaming notes never
-  // breaks image links.
-  function makeImagesLoadable(content: string, _folder: string): string {
-    const repoPath = $settings.repo_path;
-    if (!repoPath) return content;
-    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, raw) => {
-      const [src, title] = splitUrlTitle(raw);
-      if (src.startsWith('http') || src.startsWith('data:') || ASSET_RE.test(src)) return match;
-      const absPath = src.startsWith('/') ? src : `${repoPath}/${src}`;
-      const assetUrl = convertFileSrc(absPath);
-      return title ? `![${alt}](${assetUrl} ${title})` : `![${alt}](${assetUrl})`;
-    });
-  }
-
-  // Strip asset:// URLs back to repo-root-relative paths for saving.
-  function stripAssetUrls(content: string, _folder: string): string {
-    const repoPath = $settings.repo_path;
-    if (!repoPath) return content;
-    const prefix = repoPath + '/';
-    return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, raw) => {
-      const [src, title] = splitUrlTitle(raw);
-      const m = src.match(ASSET_RE);
-      if (!m) return match;
-      // decodeURIComponent may give "//home/..." when convertFileSrc encoded the leading slash
-      let absPath = decodeURIComponent(m[1]);
-      if (absPath.startsWith('//')) absPath = absPath.slice(1);
-      if (absPath.startsWith(prefix)) {
-        const rel = absPath.slice(prefix.length);
-        return title ? `![${alt}](${rel} ${title})` : `![${alt}](${rel})`;
-      }
-      return match;
-    });
-  }
-
   function loadNote(note: Note) {
     if (historyMode) { historyMode = false; historySelectedSha = null; historyCommits = []; }
     if (saveTimer && currentNote && currentNote.id !== note.id) {
@@ -268,7 +220,7 @@
     currentNote = note;
     lastLoadedId = note.id;
     currentMarkdown = note.content;
-    const display = makeImagesLoadable(note.content, note.folder ?? '');
+    const display = toDisplayMarkdown(note.content);
     loadingNote = true;
     crepe?.editor.action(replaceAll(display));
     crepe?.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => true }); });
@@ -283,7 +235,7 @@
     } else {
       rawMode = false;
       if (crepe && currentNote) {
-        crepe.editor.action(replaceAll(makeImagesLoadable(currentMarkdown, currentNote.folder ?? '')));
+        crepe.editor.action(replaceAll(toDisplayMarkdown(currentMarkdown)));
       }
     }
   }
@@ -725,6 +677,7 @@
       s.textContent = '.milkdown .ProseMirror h1,.milkdown .ProseMirror h2,.milkdown .ProseMirror h3,.milkdown .ProseMirror h4,.milkdown .ProseMirror h5,.milkdown .ProseMirror h6{margin-top:0!important;padding-top:0!important}';
       document.head.appendChild(s);
     }
+    const uploadImage = async (file: File) => api.resolveImageUrl(await api.saveImage('img', file));
     const c = new Crepe({
       root: editorEl,
       defaultValue: '',
@@ -733,10 +686,13 @@
         [CrepeFeature.TopBar]: false,
         [CrepeFeature.Latex]: false,
       },
+      featureConfigs: {
+        [CrepeFeature.ImageBlock]: { onUpload: uploadImage, blockOnUpload: uploadImage, inlineOnUpload: uploadImage },
+      },
     });
     c.on((api) => {
       api.markdownUpdated((_, markdown) => {
-        currentMarkdown = stripAssetUrls(markdown, currentNote?.folder ?? '');
+        currentMarkdown = toStoredMarkdown(markdown);
         // Skip autosave when the update was triggered by loadNote's replaceAll call.
         if (currentNote && !loadingNote) scheduleSave();
       });
@@ -753,7 +709,7 @@
       removeCodeBox = installCodeBoxButton(c);
       c.editor.action((ctx) => { installCodeBlockPlugin(ctx); installLinkPlugin(ctx); });
       if (currentNote && currentMarkdown) {
-        crepe.editor.action(replaceAll(makeImagesLoadable(currentMarkdown, currentNote.folder ?? '')));
+        crepe.editor.action(replaceAll(toDisplayMarkdown(currentMarkdown)));
       } else if ($notes.length > 0) {
         const first = $notes[0];
         selectedNoteId.set(first.id);
@@ -1050,7 +1006,7 @@
                     historySelectedSha = null;
                     if (crepe && currentNote) {
                       loadingNote = true;
-                      crepe.editor.action(replaceAll(makeImagesLoadable(currentMarkdown, currentNote.folder ?? '')));
+                      crepe.editor.action(replaceAll(toDisplayMarkdown(currentMarkdown)));
                       loadingNote = false;
                       crepe.editor.action((ctx) => { ctx.get(editorViewCtx).setProps({ editable: () => true }); });
                     }

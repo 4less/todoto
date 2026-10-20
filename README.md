@@ -1,8 +1,20 @@
-# Tauri + SvelteKit + TypeScript
-
-This template should help get you started developing with Tauri, SvelteKit and TypeScript in Vite.
-
-## Recommended IDE Setup
-
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
 # todoto
+
+Todos, notes and whiteboards in the browser, synced to a GitHub repository.
+
+Available as a native desktop/Android app (a thin Tauri shell) and as a web
+app on GitHub Pages. Both run the same code: data lives in IndexedDB, works
+offline, and syncs to the GitHub repo configured in Settings.
+
+## Development
+
+```sh
+npm install
+just dev      # desktop app with hot reload
+just install  # build + install the .deb
+just apk      # Android debug APK
+just dev-web  # browser only, http://localhost:1420
+just check    # type-check
+```
+
+Pushing to `main` deploys to GitHub Pages (`.github/workflows/deploy.yml`).

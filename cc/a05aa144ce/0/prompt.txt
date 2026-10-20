@@ -1,0 +1,13 @@
+Investigate how I could implement a dialog that I can run in the morning, and a dialog I can run in the evening. In the morning it asks me what I want to do (which todos/subtodos I want to work on) and lets me create new todos as well. In the evening It shows me what I wanted to do, and write a note what progress I wanted to achieve. Also let me fill out a quick feedback about Have I been concentrated, was I productive, a freeform text what happened, and how I want to prepare for the next day. Implement this in a new branch.
+
+---
+
+Yes implement this
+
+---
+
+I need the day planning to be grouped by project, its hard to find something otherwise. Add the project categories as tabs. also make the window resizable
+
+---
+
+where is it?
